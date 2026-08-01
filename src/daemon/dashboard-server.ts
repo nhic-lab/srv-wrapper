@@ -4,6 +4,7 @@ import type { Server } from 'node:http'
 import type { Registry } from './registry.js'
 import type { Keychain } from './keychain.js'
 import type { LogStore } from './logstore.js'
+import type { ServerRecord } from '../shared/types.js'
 
 interface DashboardOptions {
   registry: Registry
@@ -48,6 +49,7 @@ export function createDashboardApp(opts: DashboardOptions): { app: express.Expre
     const error = validateServerInput(input)
     if (error) return res.status(400).json({ error })
 
+    const existing = opts.registry.get(input.id)
     const record = opts.registry.upsert({
       id: input.id, host: input.host, port: input.port, username: input.username,
       authMethod: input.authMethod, keyPath: input.keyPath,
@@ -55,7 +57,14 @@ export function createDashboardApp(opts: DashboardOptions): { app: express.Expre
     try {
       opts.keychain.setSecret(input.id, input.secret)
     } catch (err: any) {
-      opts.registry.delete(input.id)
+      if (existing) {
+        opts.registry.upsert({
+          id: existing.id, host: existing.host, port: existing.port, username: existing.username,
+          authMethod: existing.authMethod, keyPath: existing.keyPath,
+        })
+      } else {
+        opts.registry.delete(input.id)
+      }
       return res.status(500).json({ error: `failed to store secret: ${err?.message ?? err}` })
     }
     res.status(201).json(record)
@@ -83,21 +92,29 @@ export function createDashboardApp(opts: DashboardOptions): { app: express.Expre
     }
 
     const succeeded: string[] = []
-    const committed: string[] = []
+    const committed: Array<{ id: string; priorRecord: ServerRecord | undefined }> = []
     try {
       for (const input of valid) {
+        const priorRecord = opts.registry.get(input.id)
         opts.registry.upsert({
           id: input.id, host: input.host, port: input.port, username: input.username,
           authMethod: input.authMethod, keyPath: input.keyPath,
         })
-        committed.push(input.id)
+        committed.push({ id: input.id, priorRecord })
         opts.keychain.setSecret(input.id, input.secret)
         succeeded.push(input.id)
       }
     } catch (err: any) {
-      for (const id of committed) {
-        opts.registry.delete(id)
-        opts.keychain.deleteSecret(id)
+      for (const { id, priorRecord } of committed) {
+        if (priorRecord) {
+          opts.registry.upsert({
+            id: priorRecord.id, host: priorRecord.host, port: priorRecord.port, username: priorRecord.username,
+            authMethod: priorRecord.authMethod, keyPath: priorRecord.keyPath,
+          })
+        } else {
+          opts.registry.delete(id)
+          opts.keychain.deleteSecret(id)
+        }
       }
       return res.status(500).json({ error: `bulk import failed partway, rolled back: ${err?.message ?? err}`, succeeded: [], failed: [] })
     }

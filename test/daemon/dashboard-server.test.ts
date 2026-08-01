@@ -108,6 +108,63 @@ describe('dashboard-server', () => {
     expect(registry.get('srv-fail')).toBeUndefined()
   })
 
+  it('POST /api/servers restores the ORIGINAL record (not delete) when updating an existing server and Keychain.setSecret throws', async () => {
+    const { app: goodApp } = createDashboardApp({ registry, keychain, logStore })
+    await request(goodApp)
+      .post('/api/servers')
+      .send({ id: 'srv-edit', host: 'original-host', port: 22, username: 'orig-user', authMethod: 'password', secret: 'orig-secret' })
+
+    const failingKeychain = new Keychain('/usr/local/bin/srvd', (cmd, args) => {
+      if (args.includes('add-generic-password')) return { stdout: '', status: 1 }
+      return { stdout: '', status: 0 }
+    })
+    const { app: failApp } = createDashboardApp({ registry, keychain: failingKeychain, logStore })
+    const res = await request(failApp)
+      .post('/api/servers')
+      .send({ id: 'srv-edit', host: 'new-host', port: 2222, username: 'new-user', authMethod: 'password', secret: 'new-secret' })
+
+    expect(res.status).toBe(500)
+    const restored = registry.get('srv-edit')
+    expect(restored).toBeDefined()
+    expect(restored!.host).toBe('original-host')
+    expect(restored!.port).toBe(22)
+    expect(restored!.username).toBe('orig-user')
+  })
+
+  it('POST /api/servers/bulk restores the ORIGINAL record of a pre-existing server when a later entry in the batch fails', async () => {
+    const { app: goodApp } = createDashboardApp({ registry, keychain, logStore })
+    await request(goodApp)
+      .post('/api/servers')
+      .send({ id: 'srv-existing', host: 'original-host', port: 22, username: 'orig-user', authMethod: 'password', secret: 'orig-secret' })
+
+    let calls = 0
+    const failingKeychain = new Keychain('/usr/local/bin/srvd', (cmd, args) => {
+      if (args.includes('add-generic-password')) {
+        calls += 1
+        if (calls === 2) return { stdout: '', status: 1 }
+        return { stdout: '', status: 0 }
+      }
+      return { stdout: '', status: 0 }
+    })
+    const { app: failApp } = createDashboardApp({ registry, keychain: failingKeychain, logStore })
+    const res = await request(failApp)
+      .post('/api/servers/bulk')
+      .send({
+        servers: [
+          { id: 'srv-existing', host: 'updated-host', port: 2222, username: 'updated-user', authMethod: 'password', secret: 's1' },
+          { id: 'srv-new-fail', host: 'h2', port: 22, username: 'u2', authMethod: 'password', secret: 's2' },
+        ],
+      })
+
+    expect(res.status).toBe(500)
+    const restored = registry.get('srv-existing')
+    expect(restored).toBeDefined()
+    expect(restored!.host).toBe('original-host')
+    expect(restored!.port).toBe(22)
+    expect(restored!.username).toBe('orig-user')
+    expect(registry.get('srv-new-fail')).toBeUndefined()
+  })
+
   it('POST /api/servers/bulk rolls back all committed entries if Keychain.setSecret throws partway through', async () => {
     let calls = 0
     const failingKeychain = new Keychain('/usr/local/bin/srvd', (cmd, args) => {
