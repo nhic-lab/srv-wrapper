@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>srv — live agent activity</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="vmock" id="app">
+    <div class="vtopbar">
+      <div class="vbrand"><span class="sq"></span> srv</div>
+      <div class="vnav">
+        <span class="nav-item active" data-view="live">Live</span>
+        <span class="nav-item" data-view="history">History</span>
+        <span class="nav-item" data-view="servers">Servers</span>
+      </div>
+    </div>
+    <div class="vbody">
+      <div class="vsidebar">
+        <div class="label">Servers</div>
+        <div id="server-list"></div>
+      </div>
+      <div class="vmain">
+        <section id="view-live">
+          <div class="vrowhead">
+            <h4>Live activity</h4>
+            <span class="vpill" id="live-summary">0 running</span>
+          </div>
+          <div id="live-feed"></div>
+        </section>
+
+        <section id="view-history" hidden>
+          <div class="vrowhead"><h4>History</h4></div>
+          <div id="history-feed"></div>
+        </section>
+
+        <section id="view-servers" hidden>
+          <div class="vrowhead"><h4>Register a server</h4></div>
+          <form id="server-form" class="vform">
+            <input name="id" placeholder="server id (e.g. srv-a1)" required />
+            <input name="host" placeholder="host" required />
+            <input name="port" placeholder="port" value="22" required />
+            <input name="username" placeholder="username" required />
+            <select name="authMethod">
+              <option value="password">password</option>
+              <option value="key">key</option>
+            </select>
+            <input name="secret" placeholder="password or key passphrase" type="password" required />
+            <button type="submit">Add server</button>
+          </form>
+
+          <div class="vrowhead" style="margin-top:32px"><h4>Bulk import (JSON)</h4></div>
+          <textarea id="bulk-json" class="vtextarea" placeholder='[{"id":"srv-a1","host":"...","port":22,"username":"...","authMethod":"password","secret":"..."}]'></textarea>
+          <button id="bulk-submit">Import</button>
+          <div id="bulk-result"></div>
+        </section>
+      </div>
+    </div>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>
