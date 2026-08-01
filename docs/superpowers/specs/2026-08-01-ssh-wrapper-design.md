@@ -81,6 +81,23 @@ A Claude Code skill documents:
 
 Node.js/TypeScript throughout: `ssh2` for SSH connections, Express + `ws` for the daemon/dashboard HTTP+WebSocket API, `better-sqlite3` for registry and log storage, macOS Keychain access via the `security` CLI or a native binding.
 
+## Visual Direction (Dashboard)
+
+Monochrome brutalist, modeled on Vercel's public Geist design system:
+
+- **Typography:** Geist Sans for UI (600 weight headings, 500 weight nav/labels, 400 weight body), Geist Mono reserved for server IDs, commands, and log/output text — never used for prose.
+- **Color:** near-monochrome. True-black page background; status color (green = running, gray = idle, red = error) is the only non-gray accent anywhere in the UI.
+- **Backgrounds & elevation:** flat, not layered with solid gray blocks. Only two background levels exist (page background, and a barely-there ~2.5% white tint for cards); separation between page/sidebar/cards/log blocks is done primarily with hairline (~9% white) borders, not background jumps. Hover/active states are translucent white overlays (~6%/9%), not solid fills.
+- **Radii:** 6px for small elements (pills, log blocks), 10–12px for cards, 14px for the outer frame — matching Geist's radius presets.
+- **Spacing:** generous padding (20–32px in main content areas, 10–16px component-level) — deliberately roomier than a dense terminal, closer to how Vercel's actual dashboard breathes.
+- **Layout:** top nav bar (product name + Live/History/Servers/Settings) + left sidebar (server list with status dots, active agent list) + main content area (live activity cards, each showing server id, status, agent label, elapsed time, and an embedded mono-font log excerpt).
+
+Validated interactively via the brainstorming visual companion (mockups in `.superpowers/brainstorm/`, gitignored) against real Awwwards/Geist references before approval:
+- [Algorithmic Trading Dashboard](https://www.awwwards.com/sites/algorithmic-trading-dashboard) — considered, not chosen (too raw-terminal).
+- [Signal IQ, Setu by Pine Labs](https://www.awwwards.com/inspiration/signaliq-closing-interaction-signal-iq-setu-by-pine-labs) — considered, not chosen (too glow/fintech).
+- [Covid-19 Data Dashboard](https://www.awwwards.com/sites/covid-19-data-dashboard) — considered, not chosen (too warm/editorial).
+- Vercel's [Geist design system](https://vercel.com/geist/introduction) (colors, typography, materials docs) — **chosen direction**. Note: Geist's public docs describe token architecture and naming but don't publish exact hex/opacity values, so the specific gray/alpha values above are a faithful approximation of their stated system, not lifted verbatim.
+
 ## Open Considerations (deferred, not blocking v1)
 
 - Whether to add a dashboard "kill session" control later (cheap to add on top of the observation-only live view).
