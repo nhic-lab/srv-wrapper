@@ -135,6 +135,7 @@ export class SocketServer {
       clearTimeout(session.sessionTimeoutTimer)
       session.sessionTimeoutTimer = this.scheduleSessionTimeout(msg.sessionId)
       this.opts.sshManager.sendToSession(msg.sessionId, msg.command)
+      if (session.idleTimer) clearTimeout(session.idleTimer)
       session.idleTimer = setTimeout(() => this.finalizePendingSend(msg.sessionId), 300)
       return
     }
@@ -146,6 +147,7 @@ export class SocketServer {
         return
       }
       clearTimeout(session.sessionTimeoutTimer)
+      if (session.idleTimer) clearTimeout(session.idleTimer)
       this.opts.sshManager.stopSession(msg.sessionId)
       this.opts.logStore.finish(session.runId, null)
       this.sessions.delete(msg.sessionId)
@@ -160,6 +162,7 @@ export class SocketServer {
     return setTimeout(() => {
       const session = this.sessions.get(sessionId)
       if (!session) return
+      if (session.idleTimer) clearTimeout(session.idleTimer)
       this.opts.sshManager.stopSession(sessionId)
       this.opts.logStore.finish(session.runId, null)
       this.sessions.delete(sessionId)

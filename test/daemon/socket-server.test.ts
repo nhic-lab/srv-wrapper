@@ -192,4 +192,44 @@ describe('SocketServer', () => {
       vi.useRealTimers()
     }
   })
+
+  it('clears the previous idleTimer instead of leaking it when a second session_send arrives before the first one idles out', async () => {
+    const { EventEmitter } = await import('node:events')
+    const channel: any = new EventEmitter()
+    channel.stderr = new EventEmitter()
+    channel.write = () => {}
+    channel.end = () => channel.emit('close')
+
+    const sessionSshManager = new SshManager(
+      () => 'secret',
+      async () => ({ shell: (cb: (err: any, ch: any) => void) => cb(null, channel) })
+    )
+    await server.stop()
+    server = new SocketServer({ socketPath, registry, logStore, sshManager: sessionSshManager })
+    await server.start()
+
+    const startEvents = await connectAndSend({ type: 'session_start', serverId: 'srv-a1', agentLabel: 'agent-x', requestId: 'r1' }, 'session_started')
+    const sessionId = startEvents.find((e) => e.type === 'session_started').sessionId
+
+    // First send: fire-and-forget (channel.write is silent, so no 'stream'/'done' will ever
+    // arrive on this connection unless its idleTimer is left to fire on its own).
+    const conn1 = createConnection(socketPath)
+    await new Promise<void>((resolve) => {
+      conn1.on('connect', () => {
+        conn1.write(JSON.stringify({ type: 'session_send', sessionId, command: 'ls\n', requestId: 'r2' }) + '\n')
+        resolve()
+      })
+    })
+    await new Promise((r) => setTimeout(r, 20))
+
+    const firstIdleTimer = (server as any).sessions.get(sessionId).idleTimer
+    expect(firstIdleTimer).not.toBeNull()
+
+    const clearTimeoutSpy = vi.spyOn(global, 'clearTimeout')
+    await connectAndSend({ type: 'session_send', sessionId, command: 'pwd\n', requestId: 'r3' }, 'done')
+
+    expect(clearTimeoutSpy.mock.calls.some((call) => call[0] === firstIdleTimer)).toBe(true)
+    clearTimeoutSpy.mockRestore()
+    conn1.destroy()
+  })
 })
