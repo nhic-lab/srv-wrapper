@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { SocketServer } from '../../src/daemon/socket-server.js'
 import { Registry } from '../../src/daemon/registry.js'
 import { LogStore } from '../../src/daemon/logstore.js'
@@ -92,5 +92,34 @@ describe('SocketServer', () => {
     const events = await connectAndSend({ type: 'exec', serverId: 'nope', agentLabel: 'a', command: 'x', requestId: 'req-3' })
     const done = events.find((e) => e.type === 'done')
     expect(done.error).toMatch(/unknown server/i)
+  })
+
+  it('surfaces a synchronous throw inside handleMessage as a done error instead of crashing', async () => {
+    vi.spyOn(registry, 'get').mockImplementation(() => {
+      throw new Error('boom')
+    })
+    const events = await connectAndSend({ type: 'exec', serverId: 'srv-a1', agentLabel: 'a', command: 'x', requestId: 'req-4' })
+    const done = events.find((e) => e.type === 'done')
+    expect(done.error).toMatch(/boom/)
+  })
+
+  it('does not crash on a malformed JSON line, and later connections still work', async () => {
+    await new Promise<void>((resolve, reject) => {
+      const conn = createConnection(socketPath)
+      conn.on('connect', () => {
+        conn.write('not json at all\n')
+        setTimeout(() => {
+          conn.end()
+          resolve()
+        }, 50)
+      })
+      conn.on('error', reject)
+    })
+
+    const events = await connectAndSend({
+      type: 'exec', serverId: 'srv-a1', agentLabel: 'test-agent', command: 'echo ok', requestId: 'req-5',
+    })
+    const done = events.find((e) => e.type === 'done')
+    expect(done.exitCode).toBe(0)
   })
 })

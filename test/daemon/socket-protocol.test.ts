@@ -23,4 +23,10 @@ describe('socket-protocol', () => {
     expect(messages).toEqual([{ a: 1 }])
     expect(rest).toBe('{"b":2')
   })
+
+  it('decodeMessages skips a malformed JSON line instead of throwing', () => {
+    const { messages, rest } = decodeMessages('not json at all\n{"a":1}\n')
+    expect(messages).toEqual([{ a: 1 }])
+    expect(rest).toBe('')
+  })
 })

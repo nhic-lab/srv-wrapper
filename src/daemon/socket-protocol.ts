@@ -5,6 +5,14 @@ export function encodeMessage(msg: object): string {
 export function decodeMessages(buffer: string): { messages: object[]; rest: string } {
   const parts = buffer.split('\n')
   const rest = parts.pop() ?? ''
-  const messages = parts.filter((line) => line.length > 0).map((line) => JSON.parse(line))
+  const messages: object[] = []
+  for (const line of parts) {
+    if (line.length === 0) continue
+    try {
+      messages.push(JSON.parse(line))
+    } catch {
+      // malformed line — skip it rather than throwing and crashing the daemon
+    }
+  }
   return { messages, rest }
 }

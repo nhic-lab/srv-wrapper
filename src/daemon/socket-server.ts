@@ -38,7 +38,16 @@ export class SocketServer {
       buffer += data.toString()
       const { messages, rest } = decodeMessages(buffer)
       buffer = rest
-      for (const msg of messages) this.handleMessage(conn, msg as any)
+      for (const msg of messages) {
+        this.handleMessage(conn, msg as any).catch((err) => {
+          this.send(conn, {
+            type: 'done',
+            requestId: (msg as any).requestId ?? 'unknown',
+            exitCode: null,
+            error: `internal error: ${err?.message ?? err}`,
+          })
+        })
+      }
     })
   }
 
