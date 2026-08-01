@@ -34,7 +34,7 @@ describe('SshManager', () => {
     const exitCode = await mgr.exec(server, 'ls -la', (_s, chunk) => chunks.push(chunk))
 
     expect(resolver).toHaveBeenCalledWith('srv-a1')
-    expect(connectFn).toHaveBeenCalledWith(server, 'hunter2')
+    expect(connectFn).toHaveBeenCalledWith(server, 'hunter2', expect.any(Object))
     expect(chunks).toEqual(['hello\n'])
     expect(exitCode).toBe(0)
   })
@@ -87,6 +87,31 @@ describe('SshManager', () => {
     const sessionId = await mgr.startSession(server, () => {})
     mgr.stopSession(sessionId)
     expect(channel.end).toHaveBeenCalled()
+    expect(mgr.hasSession(sessionId)).toBe(false)
     expect(() => mgr.sendToSession(sessionId, 'x')).toThrow()
+  })
+
+  it('passes HostKeyStore to connectFn for host-key verification', async () => {
+    const channel = fakeExecChannel()
+    let capturedHostKeyStore: any = null
+    const fakeClient = {
+      exec: vi.fn((_cmd: string, cb: (err: any, channel: any) => void) => {
+        cb(null, channel)
+        queueMicrotask(() => {
+          channel.emit('close', 0)
+        })
+      }),
+    }
+    const connectFn = vi.fn(async (_server: ServerRecord, _secret: string, hostKeyStore?: any) => {
+      capturedHostKeyStore = hostKeyStore
+      return fakeClient
+    })
+    const mgr = new SshManager(() => 'secret', connectFn as any)
+
+    await mgr.exec(server, 'true', () => {})
+
+    expect(capturedHostKeyStore).toBeDefined()
+    expect(typeof capturedHostKeyStore.get).toBe('function')
+    expect(typeof capturedHostKeyStore.set).toBe('function')
   })
 })

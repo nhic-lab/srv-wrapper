@@ -2,22 +2,49 @@ import { Client } from 'ssh2'
 import { randomUUID } from 'node:crypto'
 import type { ServerRecord } from '../shared/types.js'
 
-export type ConnectFn = (server: ServerRecord, secret: string) => Promise<any>
+export interface HostKeyStore {
+  get(serverId: string): string | undefined
+  set(serverId: string, fingerprint: string): void
+}
 
-function defaultConnect(server: ServerRecord, secret: string): Promise<any> {
+export class InMemoryHostKeyStore implements HostKeyStore {
+  private fingerprints = new Map<string, string>()
+  get(serverId: string): string | undefined {
+    return this.fingerprints.get(serverId)
+  }
+  set(serverId: string, fingerprint: string): void {
+    this.fingerprints.set(serverId, fingerprint)
+  }
+}
+
+export type ConnectFn = (server: ServerRecord, secret: string, hostKeyStore?: HostKeyStore) => Promise<any>
+
+function defaultConnect(server: ServerRecord, secret: string, hostKeyStore?: HostKeyStore): Promise<any> {
   return new Promise((resolve, reject) => {
     const client = new Client()
     client.on('ready', () => resolve(client))
     client.on('error', reject)
     const authOpts: Record<string, unknown> =
       server.authMethod === 'password' ? { password: secret } : { privateKey: secret }
-    client.connect({ host: server.host, port: server.port, username: server.username, ...authOpts })
+
+    const connectOpts: Record<string, unknown> = { host: server.host, port: server.port, username: server.username, ...authOpts }
+    if (hostKeyStore) {
+      connectOpts.hostHash = 'sha256'
+      connectOpts.hostVerifier = (fingerprint: string) => {
+        const expected = hostKeyStore.get(server.id)
+        if (!expected) {
+          hostKeyStore.set(server.id, fingerprint)
+          return true
+        }
+        return expected === fingerprint
+      }
+    }
+    client.connect(connectOpts as any)
   })
 }
 
 interface OpenSession {
   channel: any
-  closed: boolean
 }
 
 export class SshManager {
@@ -25,8 +52,13 @@ export class SshManager {
 
   constructor(
     private secretResolver: (serverId: string) => string,
-    private connectFn: ConnectFn = defaultConnect
+    private connectFn: ConnectFn = defaultConnect,
+    private hostKeyStore: HostKeyStore = new InMemoryHostKeyStore()
   ) {}
+
+  hasSession(sessionId: string): boolean {
+    return this.sessions.has(sessionId)
+  }
 
   async exec(
     server: ServerRecord,
@@ -34,7 +66,7 @@ export class SshManager {
     onData: (stream: 'stdout' | 'stderr', chunk: string) => void
   ): Promise<number> {
     const secret = this.secretResolver(server.id)
-    const client = await this.connectFn(server, secret)
+    const client = await this.connectFn(server, secret, this.hostKeyStore)
 
     return new Promise((resolve, reject) => {
       client.exec(command, (err: any, channel: any) => {
@@ -48,7 +80,7 @@ export class SshManager {
 
   async startSession(server: ServerRecord, onData: (chunk: string) => void): Promise<string> {
     const secret = this.secretResolver(server.id)
-    const client = await this.connectFn(server, secret)
+    const client = await this.connectFn(server, secret, this.hostKeyStore)
 
     const channel = await new Promise<any>((resolve, reject) => {
       client.shell((err: any, ch: any) => (err ? reject(err) : resolve(ch)))
@@ -56,13 +88,13 @@ export class SshManager {
     channel.on('data', (data: Buffer) => onData(data.toString()))
 
     const sessionId = randomUUID()
-    this.sessions.set(sessionId, { channel, closed: false })
+    this.sessions.set(sessionId, { channel })
     return sessionId
   }
 
   sendToSession(sessionId: string, command: string): void {
     const session = this.sessions.get(sessionId)
-    if (!session || session.closed) throw new Error(`No open session ${sessionId}`)
+    if (!session) throw new Error(`No open session ${sessionId}`)
     session.channel.write(command)
   }
 
@@ -70,6 +102,6 @@ export class SshManager {
     const session = this.sessions.get(sessionId)
     if (!session) return
     session.channel.end()
-    session.closed = true
+    this.sessions.delete(sessionId)
   }
 }
