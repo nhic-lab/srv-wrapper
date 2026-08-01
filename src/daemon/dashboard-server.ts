@@ -22,18 +22,20 @@ interface ServerInput {
 }
 
 function validateServerInput(input: any): string | null {
-  if (!input.id) return 'missing id'
-  if (!input.host) return 'missing host'
-  if (!input.port) return 'missing port'
-  if (!input.username) return 'missing username'
+  if (!input.id || typeof input.id !== 'string' || !/^[a-zA-Z0-9._-]{1,64}$/.test(input.id)) return 'invalid or missing id'
+  if (!input.host || typeof input.host !== 'string') return 'missing host'
+  if (!Number.isInteger(input.port) || input.port < 1 || input.port > 65535) return 'port must be an integer between 1 and 65535'
+  if (!input.username || typeof input.username !== 'string') return 'missing username'
   if (input.authMethod !== 'password' && input.authMethod !== 'key') return 'authMethod must be password or key'
+  if (input.authMethod === 'key' && !input.keyPath) return 'keyPath is required when authMethod is key'
+  if (input.authMethod === 'password' && input.keyPath) return 'keyPath must not be set when authMethod is password'
   if (!input.secret) return 'missing secret'
   return null
 }
 
 export function createDashboardApp(opts: DashboardOptions): { app: express.Express; broadcast: (event: object) => void } {
   const app = express()
-  app.use(express.json())
+  app.use(express.json({ limit: '32kb' }))
 
   const wsClients = new Set<import('ws').WebSocket>()
   const broadcast = (event: object) => {
@@ -50,12 +52,20 @@ export function createDashboardApp(opts: DashboardOptions): { app: express.Expre
       id: input.id, host: input.host, port: input.port, username: input.username,
       authMethod: input.authMethod, keyPath: input.keyPath,
     })
-    opts.keychain.setSecret(input.id, input.secret)
+    try {
+      opts.keychain.setSecret(input.id, input.secret)
+    } catch (err: any) {
+      opts.registry.delete(input.id)
+      return res.status(500).json({ error: `failed to store secret: ${err?.message ?? err}` })
+    }
     res.status(201).json(record)
   })
 
   app.post('/api/servers/bulk', (req, res) => {
-    const servers: ServerInput[] = req.body.servers ?? []
+    if (!Array.isArray(req.body.servers)) {
+      return res.status(400).json({ error: 'servers must be an array' })
+    }
+    const servers: ServerInput[] = req.body.servers
     const seenIds = new Set<string>()
     const failed: Array<{ id?: string; error: string }> = []
     const valid: ServerInput[] = []
@@ -73,13 +83,23 @@ export function createDashboardApp(opts: DashboardOptions): { app: express.Expre
     }
 
     const succeeded: string[] = []
-    for (const input of valid) {
-      opts.registry.upsert({
-        id: input.id, host: input.host, port: input.port, username: input.username,
-        authMethod: input.authMethod, keyPath: input.keyPath,
-      })
-      opts.keychain.setSecret(input.id, input.secret)
-      succeeded.push(input.id)
+    const committed: string[] = []
+    try {
+      for (const input of valid) {
+        opts.registry.upsert({
+          id: input.id, host: input.host, port: input.port, username: input.username,
+          authMethod: input.authMethod, keyPath: input.keyPath,
+        })
+        committed.push(input.id)
+        opts.keychain.setSecret(input.id, input.secret)
+        succeeded.push(input.id)
+      }
+    } catch (err: any) {
+      for (const id of committed) {
+        opts.registry.delete(id)
+        opts.keychain.deleteSecret(id)
+      }
+      return res.status(500).json({ error: `bulk import failed partway, rolled back: ${err?.message ?? err}`, succeeded: [], failed: [] })
     }
     res.json({ succeeded, failed: [] })
   })
@@ -101,8 +121,20 @@ export function createDashboardApp(opts: DashboardOptions): { app: express.Expre
 
   app.use(express.static(new URL('../../public', import.meta.url).pathname))
 
+  const ALLOWED_ORIGINS = new Set(['http://127.0.0.1:4280', 'http://localhost:4280'])
+
   const attachWebSocket = (server: Server) => {
-    const wss = new WebSocketServer({ server, path: '/api/live' })
+    const wss = new WebSocketServer({
+      server,
+      path: '/api/live',
+      verifyClient: (info, cb) => {
+        if (!info.origin || !ALLOWED_ORIGINS.has(info.origin)) {
+          cb(false, 403, 'forbidden origin')
+          return
+        }
+        cb(true)
+      },
+    })
     wss.on('connection', (ws) => {
       wsClients.add(ws)
       ws.on('close', () => wsClients.delete(ws))
