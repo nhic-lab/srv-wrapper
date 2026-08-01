@@ -16,22 +16,47 @@ let logStore: LogStore
 let keychain: Keychain
 let secretsSet: Record<string, string>
 
+/**
+ * Builds a fake Keychain backed by `secrets`, fully implementing
+ * add/delete/find so getSecret() round-trips real values. Pass
+ * `failAddOnCall` (1-indexed) to make the Nth add-generic-password call
+ * fail, simulating a real `security` CLI failure mid-request.
+ */
+function makeKeychain(secrets: Record<string, string>, failAddOnCall?: number): Keychain {
+  let addCalls = 0
+  return new Keychain('/usr/local/bin/srvd', (_cmd, args) => {
+    if (args.includes('add-generic-password')) {
+      addCalls += 1
+      const id = args[args.indexOf('-a') + 1]
+      const secret = args[args.indexOf('-w') + 1]
+      if (failAddOnCall !== undefined && addCalls === failAddOnCall) {
+        return { stdout: '', status: 1 }
+      }
+      secrets[id] = secret
+      return { stdout: '', status: 0 }
+    }
+    if (args.includes('delete-generic-password')) {
+      const id = args[args.indexOf('-a') + 1]
+      delete secrets[id]
+      return { stdout: '', status: 0 }
+    }
+    if (args.includes('find-generic-password')) {
+      const id = args[args.indexOf('-a') + 1]
+      if (Object.prototype.hasOwnProperty.call(secrets, id)) {
+        return { stdout: secrets[id], status: 0 }
+      }
+      return { stdout: '', status: 1 }
+    }
+    return { stdout: '', status: 1 }
+  })
+}
+
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'srv-dash-test-'))
   registry = new Registry(path.join(dir, 'registry.db'))
   logStore = new LogStore(path.join(dir, 'log.db'))
   secretsSet = {}
-  keychain = new Keychain('/usr/local/bin/srvd', (cmd, args) => {
-    if (args.includes('add-generic-password')) {
-      secretsSet[args[args.indexOf('-a') + 1]] = args[args.indexOf('-w') + 1]
-      return { stdout: '', status: 0 }
-    }
-    if (args.includes('delete-generic-password')) {
-      delete secretsSet[args[args.indexOf('-a') + 1]]
-      return { stdout: '', status: 0 }
-    }
-    return { stdout: '', status: 1 }
-  })
+  keychain = makeKeychain(secretsSet)
 })
 
 afterEach(() => {
@@ -94,10 +119,7 @@ describe('dashboard-server', () => {
   })
 
   it('POST /api/servers rolls back the registry entry if Keychain.setSecret throws', async () => {
-    const failingKeychain = new Keychain('/usr/local/bin/srvd', (cmd, args) => {
-      if (args.includes('add-generic-password')) return { stdout: '', status: 1 }
-      return { stdout: '', status: 0 }
-    })
+    const failingKeychain = makeKeychain(secretsSet, 1)
     const { app } = createDashboardApp({ registry, keychain: failingKeychain, logStore })
     const res = await request(app)
       .post('/api/servers')
@@ -108,16 +130,13 @@ describe('dashboard-server', () => {
     expect(registry.get('srv-fail')).toBeUndefined()
   })
 
-  it('POST /api/servers restores the ORIGINAL record (not delete) when updating an existing server and Keychain.setSecret throws', async () => {
+  it('POST /api/servers restores the ORIGINAL record and ORIGINAL secret when updating an existing server and Keychain.setSecret throws', async () => {
     const { app: goodApp } = createDashboardApp({ registry, keychain, logStore })
     await request(goodApp)
       .post('/api/servers')
       .send({ id: 'srv-edit', host: 'original-host', port: 22, username: 'orig-user', authMethod: 'password', secret: 'orig-secret' })
 
-    const failingKeychain = new Keychain('/usr/local/bin/srvd', (cmd, args) => {
-      if (args.includes('add-generic-password')) return { stdout: '', status: 1 }
-      return { stdout: '', status: 0 }
-    })
+    const failingKeychain = makeKeychain(secretsSet, 1)
     const { app: failApp } = createDashboardApp({ registry, keychain: failingKeychain, logStore })
     const res = await request(failApp)
       .post('/api/servers')
@@ -129,29 +148,22 @@ describe('dashboard-server', () => {
     expect(restored!.host).toBe('original-host')
     expect(restored!.port).toBe(22)
     expect(restored!.username).toBe('orig-user')
+    expect(secretsSet['srv-edit']).toBe('orig-secret')
   })
 
-  it('POST /api/servers/bulk restores the ORIGINAL record of a pre-existing server when a later entry in the batch fails', async () => {
+  it('POST /api/servers/bulk restores the ORIGINAL record and ORIGINAL secret of a pre-existing server when a later entry in the batch fails', async () => {
     const { app: goodApp } = createDashboardApp({ registry, keychain, logStore })
     await request(goodApp)
       .post('/api/servers')
       .send({ id: 'srv-existing', host: 'original-host', port: 22, username: 'orig-user', authMethod: 'password', secret: 'orig-secret' })
 
-    let calls = 0
-    const failingKeychain = new Keychain('/usr/local/bin/srvd', (cmd, args) => {
-      if (args.includes('add-generic-password')) {
-        calls += 1
-        if (calls === 2) return { stdout: '', status: 1 }
-        return { stdout: '', status: 0 }
-      }
-      return { stdout: '', status: 0 }
-    })
+    const failingKeychain = makeKeychain(secretsSet, 2)
     const { app: failApp } = createDashboardApp({ registry, keychain: failingKeychain, logStore })
     const res = await request(failApp)
       .post('/api/servers/bulk')
       .send({
         servers: [
-          { id: 'srv-existing', host: 'updated-host', port: 2222, username: 'updated-user', authMethod: 'password', secret: 's1' },
+          { id: 'srv-existing', host: 'updated-host', port: 2222, username: 'updated-user', authMethod: 'password', secret: 'new-secret' },
           { id: 'srv-new-fail', host: 'h2', port: 22, username: 'u2', authMethod: 'password', secret: 's2' },
         ],
       })
@@ -162,26 +174,12 @@ describe('dashboard-server', () => {
     expect(restored!.host).toBe('original-host')
     expect(restored!.port).toBe(22)
     expect(restored!.username).toBe('orig-user')
+    expect(secretsSet['srv-existing']).toBe('orig-secret')
     expect(registry.get('srv-new-fail')).toBeUndefined()
   })
 
   it('POST /api/servers/bulk rolls back all committed entries if Keychain.setSecret throws partway through', async () => {
-    let calls = 0
-    const failingKeychain = new Keychain('/usr/local/bin/srvd', (cmd, args) => {
-      if (args.includes('add-generic-password')) {
-        calls += 1
-        if (calls === 2) return { stdout: '', status: 1 }
-        const id = args[args.indexOf('-a') + 1]
-        secretsSet[id] = args[args.indexOf('-w') + 1]
-        return { stdout: '', status: 0 }
-      }
-      if (args.includes('delete-generic-password')) {
-        const id = args[args.indexOf('-a') + 1]
-        delete secretsSet[id]
-        return { stdout: '', status: 0 }
-      }
-      return { stdout: '', status: 1 }
-    })
+    const failingKeychain = makeKeychain(secretsSet, 2)
     const { app } = createDashboardApp({ registry, keychain: failingKeychain, logStore })
     const res = await request(app)
       .post('/api/servers/bulk')

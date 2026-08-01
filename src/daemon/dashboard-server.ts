@@ -50,6 +50,7 @@ export function createDashboardApp(opts: DashboardOptions): { app: express.Expre
     if (error) return res.status(400).json({ error })
 
     const existing = opts.registry.get(input.id)
+    const priorSecret = existing ? opts.keychain.getSecret(input.id) : undefined
     const record = opts.registry.upsert({
       id: input.id, host: input.host, port: input.port, username: input.username,
       authMethod: input.authMethod, keyPath: input.keyPath,
@@ -62,6 +63,7 @@ export function createDashboardApp(opts: DashboardOptions): { app: express.Expre
           id: existing.id, host: existing.host, port: existing.port, username: existing.username,
           authMethod: existing.authMethod, keyPath: existing.keyPath,
         })
+        if (priorSecret !== undefined) opts.keychain.setSecret(existing.id, priorSecret)
       } else {
         opts.registry.delete(input.id)
       }
@@ -92,25 +94,27 @@ export function createDashboardApp(opts: DashboardOptions): { app: express.Expre
     }
 
     const succeeded: string[] = []
-    const committed: Array<{ id: string; priorRecord: ServerRecord | undefined }> = []
+    const committed: Array<{ id: string; priorRecord: ServerRecord | undefined; priorSecret: string | undefined }> = []
     try {
       for (const input of valid) {
         const priorRecord = opts.registry.get(input.id)
+        const priorSecret = priorRecord ? opts.keychain.getSecret(input.id) : undefined
         opts.registry.upsert({
           id: input.id, host: input.host, port: input.port, username: input.username,
           authMethod: input.authMethod, keyPath: input.keyPath,
         })
-        committed.push({ id: input.id, priorRecord })
+        committed.push({ id: input.id, priorRecord, priorSecret })
         opts.keychain.setSecret(input.id, input.secret)
         succeeded.push(input.id)
       }
     } catch (err: any) {
-      for (const { id, priorRecord } of committed) {
+      for (const { id, priorRecord, priorSecret } of committed) {
         if (priorRecord) {
           opts.registry.upsert({
             id: priorRecord.id, host: priorRecord.host, port: priorRecord.port, username: priorRecord.username,
             authMethod: priorRecord.authMethod, keyPath: priorRecord.keyPath,
           })
+          if (priorSecret !== undefined) opts.keychain.setSecret(priorRecord.id, priorSecret)
         } else {
           opts.registry.delete(id)
           opts.keychain.deleteSecret(id)
