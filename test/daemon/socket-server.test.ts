@@ -25,6 +25,7 @@ beforeEach(async () => {
   sshManager = new SshManager(
     () => 'secret',
     async () => ({
+      end: () => {},
       exec: (_cmd: string, cb: (err: any, channel: any) => void) => {
         const { EventEmitter } = require('node:events')
         const channel = new EventEmitter() as any
@@ -108,6 +109,33 @@ describe('SocketServer', () => {
     expect(done.error).toMatch(/boom/)
   })
 
+  it('sanitizes an SSH-layer connection error so the raw host/port never reaches the client or the log store', async () => {
+    const leakyError: any = new Error('connect ECONNREFUSED 10.0.0.5:22')
+    leakyError.code = 'ECONNREFUSED'
+
+    const leakySshManager = new SshManager(
+      () => 'secret',
+      async () => {
+        throw leakyError
+      }
+    )
+    await server.stop()
+    server = new SocketServer({ socketPath, registry, logStore, sshManager: leakySshManager })
+    await server.start()
+
+    const events = await connectAndSend({
+      type: 'exec', serverId: 'srv-a1', agentLabel: 'test-agent', command: 'echo ok', requestId: 'req-6',
+    })
+    const done = events.find((e) => e.type === 'done')
+    expect(done.error).not.toContain('10.0.0.5')
+    expect(done.error).not.toContain('22')
+    expect(done.error).toMatch(/connection refused/i)
+
+    const runs = logStore.list({ serverId: 'srv-a1' })
+    const serialized = JSON.stringify(runs)
+    expect(serialized).not.toContain('10.0.0.5')
+  })
+
   it('does not crash on a malformed JSON line, and later connections still work', async () => {
     await new Promise<void>((resolve, reject) => {
       const conn = createConnection(socketPath)
@@ -140,7 +168,7 @@ describe('SocketServer', () => {
 
     const sessionSshManager = new SshManager(
       () => 'secret',
-      async () => ({ shell: (cb: (err: any, ch: any) => void) => cb(null, channel) })
+      async () => ({ end: () => {}, shell: (cb: (err: any, ch: any) => void) => cb(null, channel) })
     )
     await server.stop()
     server = new SocketServer({ socketPath, registry, logStore, sshManager: sessionSshManager })
@@ -174,7 +202,7 @@ describe('SocketServer', () => {
 
       const sessionSshManager = new SshManager(
         () => 'secret',
-        async () => ({ shell: (cb: (err: any, ch: any) => void) => cb(null, channel) })
+        async () => ({ end: () => {}, shell: (cb: (err: any, ch: any) => void) => cb(null, channel) })
       )
       await server.stop()
       server = new SocketServer({ socketPath, registry, logStore, sshManager: sessionSshManager })
@@ -202,7 +230,7 @@ describe('SocketServer', () => {
 
     const sessionSshManager = new SshManager(
       () => 'secret',
-      async () => ({ shell: (cb: (err: any, ch: any) => void) => cb(null, channel) })
+      async () => ({ end: () => {}, shell: (cb: (err: any, ch: any) => void) => cb(null, channel) })
     )
     await server.stop()
     server = new SocketServer({ socketPath, registry, logStore, sshManager: sessionSshManager })

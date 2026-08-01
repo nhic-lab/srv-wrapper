@@ -7,6 +7,28 @@ import type { LogStore } from './logstore.js'
 import type { SshManager } from './ssh-manager.js'
 import type { DaemonEvent } from '../shared/types.js'
 
+const KNOWN_SSH_ERROR_CODES: Record<string, string> = {
+  ECONNREFUSED: 'connection refused',
+  ETIMEDOUT: 'connection timed out',
+  EHOSTUNREACH: 'host unreachable',
+  ENOTFOUND: 'host not found',
+  ECONNRESET: 'connection reset',
+}
+
+/**
+ * SSH/Node connection-level errors routinely embed the literal host/IP and port
+ * (e.g. "connect ECONNREFUSED 10.0.0.5:22"). The CLI process must never receive
+ * host/port/credentials, so map known error codes to safe, generic messages and
+ * fall back to a fully generic message otherwise. The real error is logged
+ * server-side only.
+ */
+function sanitizeSshError(err: any): string {
+  const code = err?.code
+  if (code && KNOWN_SSH_ERROR_CODES[code]) return `ssh error: ${KNOWN_SSH_ERROR_CODES[code]}`
+  console.error('srvd: unclassified SSH error:', err)
+  return 'ssh error: connection failed'
+}
+
 interface SocketServerOptions {
   socketPath: string
   registry: Registry
@@ -90,7 +112,7 @@ export class SocketServer {
         this.opts.onBroadcast?.({ ...done, serverId: server.id, agentLabel: msg.agentLabel })
       } catch (err: any) {
         this.opts.logStore.finish(runId, null)
-        this.send(conn, { type: 'done', requestId, exitCode: null, error: String(err?.message ?? err) })
+        this.send(conn, { type: 'done', requestId, exitCode: null, error: sanitizeSshError(err) })
       }
       return
     }
@@ -104,23 +126,28 @@ export class SocketServer {
       const runId = randomUUID()
       this.opts.logStore.start({ id: runId, serverId: server.id, agentLabel: msg.agentLabel, kind: 'session', command: null })
 
-      const sessionId = await this.opts.sshManager.startSession(server, (chunk) => {
-        this.opts.logStore.appendOutput(runId, chunk)
-        const session = this.sessions.get(sessionId)
-        if (session?.pendingConn && session.pendingRequestId) {
-          this.send(session.pendingConn, { type: 'stream', requestId: session.pendingRequestId, stream: 'stdout', chunk })
-          this.opts.onBroadcast?.({ type: 'stream', requestId: session.pendingRequestId, stream: 'stdout', chunk, serverId: server.id, agentLabel: msg.agentLabel })
-          if (session.idleTimer) clearTimeout(session.idleTimer)
-          session.idleTimer = setTimeout(() => this.finalizePendingSend(sessionId), 300)
-        }
-      })
+      try {
+        const sessionId = await this.opts.sshManager.startSession(server, (chunk) => {
+          this.opts.logStore.appendOutput(runId, chunk)
+          const session = this.sessions.get(sessionId)
+          if (session?.pendingConn && session.pendingRequestId) {
+            this.send(session.pendingConn, { type: 'stream', requestId: session.pendingRequestId, stream: 'stdout', chunk })
+            this.opts.onBroadcast?.({ type: 'stream', requestId: session.pendingRequestId, stream: 'stdout', chunk, serverId: server.id, agentLabel: msg.agentLabel })
+            if (session.idleTimer) clearTimeout(session.idleTimer)
+            session.idleTimer = setTimeout(() => this.finalizePendingSend(sessionId), 300)
+          }
+        })
 
-      this.sessions.set(sessionId, {
-        serverId: server.id, agentLabel: msg.agentLabel, runId,
-        pendingConn: null, pendingRequestId: null, idleTimer: null,
-        sessionTimeoutTimer: this.scheduleSessionTimeout(sessionId),
-      })
-      this.send(conn, { type: 'session_started', requestId, sessionId })
+        this.sessions.set(sessionId, {
+          serverId: server.id, agentLabel: msg.agentLabel, runId,
+          pendingConn: null, pendingRequestId: null, idleTimer: null,
+          sessionTimeoutTimer: this.scheduleSessionTimeout(sessionId),
+        })
+        this.send(conn, { type: 'session_started', requestId, sessionId })
+      } catch (err: any) {
+        this.opts.logStore.finish(runId, null)
+        this.send(conn, { type: 'done', requestId, exitCode: null, error: sanitizeSshError(err) })
+      }
       return
     }
 

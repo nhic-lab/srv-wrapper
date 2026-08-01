@@ -1,6 +1,8 @@
 import { Client } from 'ssh2'
 import { randomUUID } from 'node:crypto'
+import fs from 'node:fs'
 import type { ServerRecord } from '../shared/types.js'
+import type { Registry } from './registry.js'
 
 export interface HostKeyStore {
   get(serverId: string): string | undefined
@@ -17,6 +19,20 @@ export class InMemoryHostKeyStore implements HostKeyStore {
   }
 }
 
+/**
+ * Persists TOFU host-key pinning in the Registry's sqlite database so pins
+ * survive daemon restarts (launchd restarts the daemon on login/crash).
+ */
+export class RegistryHostKeyStore implements HostKeyStore {
+  constructor(private registry: Registry) {}
+  get(serverId: string): string | undefined {
+    return this.registry.get(serverId)?.hostKeyFingerprint
+  }
+  set(serverId: string, fingerprint: string): void {
+    this.registry.setHostKeyFingerprint(serverId, fingerprint)
+  }
+}
+
 export type ConnectFn = (server: ServerRecord, secret: string, hostKeyStore?: HostKeyStore) => Promise<any>
 
 function defaultConnect(server: ServerRecord, secret: string, hostKeyStore?: HostKeyStore): Promise<any> {
@@ -24,8 +40,13 @@ function defaultConnect(server: ServerRecord, secret: string, hostKeyStore?: Hos
     const client = new Client()
     client.on('ready', () => resolve(client))
     client.on('error', reject)
-    const authOpts: Record<string, unknown> =
-      server.authMethod === 'password' ? { password: secret } : { privateKey: secret }
+    let authOpts: Record<string, unknown>
+    if (server.authMethod === 'password') {
+      authOpts = { password: secret }
+    } else {
+      if (!server.keyPath) throw new Error('keyPath is required for key-based authentication')
+      authOpts = { privateKey: fs.readFileSync(server.keyPath, 'utf-8'), passphrase: secret }
+    }
 
     const connectOpts: Record<string, unknown> = { host: server.host, port: server.port, username: server.username, ...authOpts }
     if (hostKeyStore) {
@@ -44,6 +65,7 @@ function defaultConnect(server: ServerRecord, secret: string, hostKeyStore?: Hos
 }
 
 interface OpenSession {
+  client: any
   channel: any
 }
 
@@ -69,11 +91,27 @@ export class SshManager {
     const client = await this.connectFn(server, secret, this.hostKeyStore)
 
     return new Promise((resolve, reject) => {
+      let settled = false
       client.exec(command, (err: any, channel: any) => {
-        if (err) return reject(err)
+        if (err) {
+          settled = true
+          client.end()
+          return reject(err)
+        }
         channel.on('data', (data: Buffer) => onData('stdout', data.toString()))
         channel.stderr.on('data', (data: Buffer) => onData('stderr', data.toString()))
-        channel.on('close', (code: number) => resolve(code))
+        channel.on('close', (code: number) => {
+          if (settled) return
+          settled = true
+          client.end()
+          resolve(code)
+        })
+        channel.on('error', (chanErr: any) => {
+          if (settled) return
+          settled = true
+          client.end()
+          reject(chanErr)
+        })
       })
     })
   }
@@ -88,7 +126,17 @@ export class SshManager {
     channel.on('data', (data: Buffer) => onData(data.toString()))
 
     const sessionId = randomUUID()
-    this.sessions.set(sessionId, { channel })
+    channel.on('error', (err: any) => {
+      console.error(`srvd: session channel error for ${sessionId}:`, err)
+      this.sessions.delete(sessionId)
+      try {
+        client.end()
+      } catch {
+        // already closed; nothing to do
+      }
+    })
+
+    this.sessions.set(sessionId, { client, channel })
     return sessionId
   }
 
@@ -102,6 +150,7 @@ export class SshManager {
     const session = this.sessions.get(sessionId)
     if (!session) return
     session.channel.end()
+    session.client.end()
     this.sessions.delete(sessionId)
   }
 }

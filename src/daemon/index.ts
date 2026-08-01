@@ -3,12 +3,16 @@ import fs from 'node:fs'
 import { Registry } from './registry.js'
 import { Keychain } from './keychain.js'
 import { LogStore } from './logstore.js'
-import { SshManager } from './ssh-manager.js'
+import { SshManager, RegistryHostKeyStore } from './ssh-manager.js'
 import { SocketServer } from './socket-server.js'
 import { createDashboardApp } from './dashboard-server.js'
 import { srvHome, srvSocketPath, srvRegistryDbPath, srvLogDbPath } from '../shared/paths.js'
 
 const DASHBOARD_PORT = 4280
+
+process.on('uncaughtException', (err) => {
+  console.error('srvd: uncaught exception (daemon continuing):', err)
+})
 
 async function main() {
   fs.mkdirSync(srvHome(), { recursive: true, mode: 0o700 })
@@ -16,7 +20,11 @@ async function main() {
   const registry = new Registry(srvRegistryDbPath())
   const logStore = new LogStore(srvLogDbPath())
   const keychain = new Keychain(process.argv[1] ?? 'srvd')
-  const sshManager = new SshManager((serverId) => keychain.getSecret(serverId))
+  const sshManager = new SshManager(
+    (serverId) => keychain.getSecret(serverId),
+    undefined,
+    new RegistryHostKeyStore(registry)
+  )
 
   const { app, broadcast } = createDashboardApp({ registry, keychain, logStore })
   const httpServer = http.createServer(app)

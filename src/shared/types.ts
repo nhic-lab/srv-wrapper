@@ -7,6 +7,7 @@ export interface ServerRecord {
   username: string
   authMethod: AuthMethod
   keyPath?: string
+  hostKeyFingerprint?: string
   createdAt: number
   updatedAt: number
 }

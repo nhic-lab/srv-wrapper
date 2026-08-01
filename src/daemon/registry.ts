@@ -15,10 +15,15 @@ export class Registry {
         username TEXT NOT NULL,
         auth_method TEXT NOT NULL CHECK(auth_method IN ('password','key')),
         key_path TEXT,
+        host_key_fingerprint TEXT,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       )
     `)
+    const cols = this.db.prepare(`PRAGMA table_info(servers)`).all() as { name: string }[]
+    if (!cols.some((c) => c.name === 'host_key_fingerprint')) {
+      this.db.exec(`ALTER TABLE servers ADD COLUMN host_key_fingerprint TEXT`)
+    }
   }
 
   upsert(record: Omit<ServerRecord, 'createdAt' | 'updatedAt'>): ServerRecord {
@@ -58,9 +63,14 @@ export class Registry {
       username: row.username,
       authMethod: row.auth_method,
       keyPath: row.key_path ?? undefined,
+      hostKeyFingerprint: row.host_key_fingerprint ?? undefined,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     }
+  }
+
+  setHostKeyFingerprint(id: string, fingerprint: string): void {
+    this.db.prepare('UPDATE servers SET host_key_fingerprint = ? WHERE id = ?').run(fingerprint, id)
   }
 
   list(): ServerRecord[] {
