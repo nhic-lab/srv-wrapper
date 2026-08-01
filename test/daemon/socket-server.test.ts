@@ -49,7 +49,7 @@ afterEach(async () => {
   fs.rmSync(dir, { recursive: true, force: true })
 })
 
-function connectAndSend(payload: object): Promise<any[]> {
+function connectAndSend(payload: object, resolveOn: string = 'done'): Promise<any[]> {
   return new Promise((resolve, reject) => {
     const conn = createConnection(socketPath)
     const received: any[] = []
@@ -58,7 +58,7 @@ function connectAndSend(payload: object): Promise<any[]> {
       for (const line of buf.toString().split('\n').filter(Boolean)) {
         const msg = JSON.parse(line)
         received.push(msg)
-        if (msg.type === 'done') {
+        if (msg.type === resolveOn) {
           conn.end()
           resolve(received)
         }
@@ -126,5 +126,70 @@ describe('SocketServer', () => {
     })
     const done = events.find((e) => e.type === 'done')
     expect(done.exitCode).toBe(0)
+  })
+
+  it('handles a full session_start -> session_send -> session_stop flow', async () => {
+    // Rebuild sshManager with both exec and shell support for this test
+    const { EventEmitter } = await import('node:events')
+    const channel: any = new EventEmitter()
+    channel.stderr = new EventEmitter()
+    channel.write = (data: string) => {
+      queueMicrotask(() => channel.emit('data', Buffer.from(`echo of: ${data}`)))
+    }
+    channel.end = () => channel.emit('close')
+
+    const sessionSshManager = new SshManager(
+      () => 'secret',
+      async () => ({ shell: (cb: (err: any, ch: any) => void) => cb(null, channel) })
+    )
+    await server.stop()
+    server = new SocketServer({ socketPath, registry, logStore, sshManager: sessionSshManager })
+    await server.start()
+
+    const startEvents = await connectAndSend({ type: 'session_start', serverId: 'srv-a1', agentLabel: 'agent-x', requestId: 'r1' }, 'session_started')
+    const sessionId = startEvents.find((e) => e.type === 'session_started').sessionId
+    expect(typeof sessionId).toBe('string')
+
+    const sendEvents = await connectAndSend({ type: 'session_send', sessionId, command: 'ls\n', requestId: 'r2' }, 'done')
+    expect(sendEvents.find((e) => e.type === 'stream').chunk).toContain('echo of: ls')
+
+    const stopEvents = await connectAndSend({ type: 'session_stop', sessionId, requestId: 'r3' }, 'done')
+    expect(stopEvents.find((e) => e.type === 'done')).toBeDefined()
+
+    const runs = logStore.list({ agentLabel: 'agent-x' })
+    expect(runs).toHaveLength(1)
+    expect(runs[0].kind).toBe('session')
+    expect(runs[0].endedAt).not.toBeNull()
+  })
+
+  it('auto-closes a session after 30 minutes of no session_send activity', async () => {
+    vi.useFakeTimers()
+    try {
+      const { EventEmitter } = await import('node:events')
+      const channel: any = new EventEmitter()
+      channel.stderr = new EventEmitter()
+      channel.write = () => {}
+      let ended = false
+      channel.end = () => { ended = true; channel.emit('close') }
+
+      const sessionSshManager = new SshManager(
+        () => 'secret',
+        async () => ({ shell: (cb: (err: any, ch: any) => void) => cb(null, channel) })
+      )
+      await server.stop()
+      server = new SocketServer({ socketPath, registry, logStore, sshManager: sessionSshManager })
+      await server.start()
+
+      const startEvents = await connectAndSend({ type: 'session_start', serverId: 'srv-a1', agentLabel: 'agent-x', requestId: 'r1' }, 'session_started')
+      const sessionId = startEvents.find((e) => e.type === 'session_started').sessionId
+
+      await vi.advanceTimersByTimeAsync(30 * 60 * 1000 + 1000)
+
+      expect(ended).toBe(true)
+      const runs = logStore.list({ agentLabel: 'agent-x' })
+      expect(runs[0].endedAt).not.toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

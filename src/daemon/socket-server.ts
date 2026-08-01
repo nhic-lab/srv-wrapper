@@ -16,7 +16,19 @@ interface SocketServerOptions {
 }
 
 export class SocketServer {
+  private static readonly SESSION_IDLE_TIMEOUT_MS = 30 * 60 * 1000
+
   private server: net.Server
+
+  private sessions = new Map<string, {
+    serverId: string
+    agentLabel: string
+    runId: string
+    pendingConn: net.Socket | null
+    pendingRequestId: string | null
+    idleTimer: NodeJS.Timeout | null
+    sessionTimeoutTimer: NodeJS.Timeout
+  }>()
 
   constructor(private opts: SocketServerOptions) {
     this.server = net.createServer((conn) => this.handleConnection(conn))
@@ -83,7 +95,84 @@ export class SocketServer {
       return
     }
 
+    if (msg.type === 'session_start') {
+      const server = this.opts.registry.get(msg.serverId)
+      if (!server) {
+        this.send(conn, { type: 'done', requestId, exitCode: null, error: `unknown server: ${msg.serverId}` })
+        return
+      }
+      const runId = randomUUID()
+      this.opts.logStore.start({ id: runId, serverId: server.id, agentLabel: msg.agentLabel, kind: 'session', command: null })
+
+      const sessionId = await this.opts.sshManager.startSession(server, (chunk) => {
+        this.opts.logStore.appendOutput(runId, chunk)
+        const session = this.sessions.get(sessionId)
+        if (session?.pendingConn && session.pendingRequestId) {
+          this.send(session.pendingConn, { type: 'stream', requestId: session.pendingRequestId, stream: 'stdout', chunk })
+          this.opts.onBroadcast?.({ type: 'stream', requestId: session.pendingRequestId, stream: 'stdout', chunk, serverId: server.id, agentLabel: msg.agentLabel })
+          if (session.idleTimer) clearTimeout(session.idleTimer)
+          session.idleTimer = setTimeout(() => this.finalizePendingSend(sessionId), 300)
+        }
+      })
+
+      this.sessions.set(sessionId, {
+        serverId: server.id, agentLabel: msg.agentLabel, runId,
+        pendingConn: null, pendingRequestId: null, idleTimer: null,
+        sessionTimeoutTimer: this.scheduleSessionTimeout(sessionId),
+      })
+      this.send(conn, { type: 'session_started', requestId, sessionId })
+      return
+    }
+
+    if (msg.type === 'session_send') {
+      const session = this.sessions.get(msg.sessionId)
+      if (!session) {
+        this.send(conn, { type: 'done', requestId, exitCode: null, error: `unknown session: ${msg.sessionId}` })
+        return
+      }
+      session.pendingConn = conn
+      session.pendingRequestId = requestId
+      clearTimeout(session.sessionTimeoutTimer)
+      session.sessionTimeoutTimer = this.scheduleSessionTimeout(msg.sessionId)
+      this.opts.sshManager.sendToSession(msg.sessionId, msg.command)
+      session.idleTimer = setTimeout(() => this.finalizePendingSend(msg.sessionId), 300)
+      return
+    }
+
+    if (msg.type === 'session_stop') {
+      const session = this.sessions.get(msg.sessionId)
+      if (!session) {
+        this.send(conn, { type: 'done', requestId, exitCode: null, error: `unknown session: ${msg.sessionId}` })
+        return
+      }
+      clearTimeout(session.sessionTimeoutTimer)
+      this.opts.sshManager.stopSession(msg.sessionId)
+      this.opts.logStore.finish(session.runId, null)
+      this.sessions.delete(msg.sessionId)
+      this.send(conn, { type: 'done', requestId, exitCode: null })
+      return
+    }
+
     this.send(conn, { type: 'done', requestId, exitCode: null, error: `unsupported request type: ${msg.type}` })
+  }
+
+  private scheduleSessionTimeout(sessionId: string): NodeJS.Timeout {
+    return setTimeout(() => {
+      const session = this.sessions.get(sessionId)
+      if (!session) return
+      this.opts.sshManager.stopSession(sessionId)
+      this.opts.logStore.finish(session.runId, null)
+      this.sessions.delete(sessionId)
+    }, SocketServer.SESSION_IDLE_TIMEOUT_MS)
+  }
+
+  private finalizePendingSend(sessionId: string): void {
+    const session = this.sessions.get(sessionId)
+    if (!session?.pendingConn || !session.pendingRequestId) return
+    this.send(session.pendingConn, { type: 'done', requestId: session.pendingRequestId, exitCode: null })
+    session.pendingConn = null
+    session.pendingRequestId = null
+    session.idleTimer = null
   }
 
   private send(conn: net.Socket, event: DaemonEvent & { requestId: string }): void {

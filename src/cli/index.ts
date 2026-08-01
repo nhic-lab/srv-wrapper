@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { Command } from 'commander'
-import { execCommand } from './client.js'
+import { execCommand, sessionStart, sessionSend, sessionStop } from './client.js'
 import { srvSocketPath } from '../shared/paths.js'
 
 const program = new Command()
@@ -28,6 +28,31 @@ program
       process.stderr.write(`srv: ${err.message}\n`)
       process.exit(1)
     }
+  })
+
+const session = program.command('session').description('Manage a persistent interactive session on a server')
+
+session
+  .command('start <server-id>')
+  .requiredOption('--agent <label>', 'label identifying the calling agent/session')
+  .action(async (serverId: string, options: { agent: string }) => {
+    const sessionId = await sessionStart({ socketPath: srvSocketPath(), serverId, agentLabel: options.agent })
+    process.stdout.write(sessionId + '\n')
+  })
+
+session
+  .command('send <session-id> <command>')
+  .action(async (sessionId: string, command: string) => {
+    await sessionSend({
+      socketPath: srvSocketPath(), sessionId, command: command + '\n',
+      onStream: (stream, chunk) => (stream === 'stdout' ? process.stdout : process.stderr).write(chunk),
+    })
+  })
+
+session
+  .command('stop <session-id>')
+  .action(async (sessionId: string) => {
+    await sessionStop({ socketPath: srvSocketPath(), sessionId })
   })
 
 program.parseAsync(process.argv)

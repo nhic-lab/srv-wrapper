@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { execCommand } from '../../src/cli/client.js'
+import { execCommand, sessionStart, sessionSend, sessionStop } from '../../src/cli/client.js'
 import net from 'node:net'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -60,5 +60,36 @@ describe('execCommand', () => {
     await expect(
       execCommand({ socketPath, serverId: 'nope', agentLabel: 'a', command: 'x', onStream: () => {} })
     ).rejects.toThrow(/unknown server/)
+  })
+})
+
+describe('session client functions', () => {
+  it('sessionStart resolves with the sessionId from session_started', async () => {
+    await startFakeDaemon((msg, write) => {
+      expect(msg.type).toBe('session_start')
+      write({ type: 'session_started', requestId: msg.requestId, sessionId: 'sess-123' })
+    })
+    const sessionId = await sessionStart({ socketPath, serverId: 'srv-a1', agentLabel: 'agent-x' })
+    expect(sessionId).toBe('sess-123')
+  })
+
+  it('sessionSend streams output then resolves on done', async () => {
+    await startFakeDaemon((msg, write) => {
+      if (msg.type === 'session_send') {
+        write({ type: 'stream', requestId: msg.requestId, stream: 'stdout', chunk: 'out\n' })
+        write({ type: 'done', requestId: msg.requestId, exitCode: null })
+      }
+    })
+    const chunks: string[] = []
+    await sessionSend({ socketPath, sessionId: 'sess-123', command: 'ls\n', onStream: (_s, c) => chunks.push(c) })
+    expect(chunks).toEqual(['out\n'])
+  })
+
+  it('sessionStop resolves once the daemon confirms with done', async () => {
+    await startFakeDaemon((msg, write) => {
+      expect(msg.type).toBe('session_stop')
+      write({ type: 'done', requestId: msg.requestId, exitCode: null })
+    })
+    await expect(sessionStop({ socketPath, sessionId: 'sess-123' })).resolves.toBeUndefined()
   })
 })
