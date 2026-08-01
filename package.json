@@ -1,0 +1,30 @@
+{
+  "name": "srv-wrapper",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "srv": "./dist/cli/index.js",
+    "srvd": "./dist/daemon/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "dev:daemon": "tsx src/daemon/index.ts"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.2",
+    "commander": "^15.0.0",
+    "express": "^5.2.1",
+    "ssh2": "^1.17.0",
+    "ws": "^8.21.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.1.2",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.23.1",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
+  }
+}
