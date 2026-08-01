@@ -50,12 +50,13 @@ export function createDashboardApp(opts: DashboardOptions): { app: express.Expre
     if (error) return res.status(400).json({ error })
 
     const existing = opts.registry.get(input.id)
-    const priorSecret = existing ? opts.keychain.getSecret(input.id) : undefined
     const record = opts.registry.upsert({
       id: input.id, host: input.host, port: input.port, username: input.username,
       authMethod: input.authMethod, keyPath: input.keyPath,
     })
+    let priorSecret: string | undefined
     try {
+      priorSecret = existing ? opts.keychain.getSecret(input.id) : undefined
       opts.keychain.setSecret(input.id, input.secret)
     } catch (err: any) {
       if (existing) {

@@ -151,6 +151,36 @@ describe('dashboard-server', () => {
     expect(secretsSet['srv-edit']).toBe('orig-secret')
   })
 
+  it('POST /api/servers returns a JSON 500 (not an unhandled exception) when Keychain.getSecret throws for an existing record, leaving the original record intact', async () => {
+    const { app: goodApp } = createDashboardApp({ registry, keychain, logStore })
+    await request(goodApp)
+      .post('/api/servers')
+      .send({ id: 'srv-getfail', host: 'original-host', port: 22, username: 'orig-user', authMethod: 'password', secret: 'orig-secret' })
+
+    // Simulate the Keychain secret being missing/inaccessible independently of the registry
+    // record (e.g. manually deleted from Keychain Access) -- getSecret throws for this id
+    // even though a registry record already exists.
+    const brokenKeychain = new Keychain('/usr/local/bin/srvd', (_cmd, args) => {
+      if (args.includes('find-generic-password')) {
+        return { stdout: '', status: 1 }
+      }
+      return { stdout: '', status: 0 }
+    })
+    const { app: failApp } = createDashboardApp({ registry, keychain: brokenKeychain, logStore })
+
+    const res = await request(failApp)
+      .post('/api/servers')
+      .send({ id: 'srv-getfail', host: 'new-host', port: 2222, username: 'new-user', authMethod: 'password', secret: 'new-secret' })
+
+    expect(res.status).toBe(500)
+    expect(res.body.error).toBeDefined()
+    const record = registry.get('srv-getfail')
+    expect(record).toBeDefined()
+    expect(record!.host).toBe('original-host')
+    expect(record!.port).toBe(22)
+    expect(record!.username).toBe('orig-user')
+  })
+
   it('POST /api/servers/bulk restores the ORIGINAL record and ORIGINAL secret of a pre-existing server when a later entry in the batch fails', async () => {
     const { app: goodApp } = createDashboardApp({ registry, keychain, logStore })
     await request(goodApp)
