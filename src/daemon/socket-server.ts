@@ -25,6 +25,7 @@ export class SocketServer {
   async start(): Promise<void> {
     if (fs.existsSync(this.opts.socketPath)) fs.unlinkSync(this.opts.socketPath)
     await new Promise<void>((resolve) => this.server.listen(this.opts.socketPath, resolve))
+    fs.chmodSync(this.opts.socketPath, 0o600)
   }
 
   async stop(): Promise<void> {

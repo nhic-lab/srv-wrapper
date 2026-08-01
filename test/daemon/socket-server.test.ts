@@ -69,6 +69,11 @@ function connectAndSend(payload: object): Promise<any[]> {
 }
 
 describe('SocketServer', () => {
+  it('restricts the socket file to owner-only permissions after starting', async () => {
+    const stats = fs.statSync(socketPath)
+    expect(stats.mode & 0o777).toBe(0o600)
+  })
+
   it('handles an exec request end-to-end and streams stdout then done', async () => {
     const events = await connectAndSend({
       type: 'exec', serverId: 'srv-a1', agentLabel: 'test-agent', command: 'echo ok', requestId: 'req-1',
