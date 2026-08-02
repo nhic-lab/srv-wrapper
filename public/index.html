@@ -38,7 +38,10 @@
         </section>
 
         <section id="view-servers" hidden>
-          <div class="vrowhead"><h4>Register a server</h4></div>
+          <div class="vrowhead"><h4>Registered servers</h4></div>
+          <div id="registered-servers"></div>
+
+          <div class="vrowhead" style="margin-top:32px"><h4 id="server-form-title">Register a server</h4></div>
           <form id="server-form" class="vform">
             <input name="id" placeholder="server id (e.g. srv-a1)" required />
             <input name="host" placeholder="host" required />
@@ -49,7 +52,10 @@
               <option value="key">key</option>
             </select>
             <input name="secret" placeholder="password or key passphrase" type="password" required />
-            <button type="submit">Add server</button>
+            <div style="display:flex; gap:10px;">
+              <button type="submit" id="server-form-submit">Add server</button>
+              <button type="button" id="server-form-cancel" hidden>Cancel edit</button>
+            </div>
           </form>
 
           <div class="vrowhead" style="margin-top:32px"><h4>Bulk import (JSON)</h4></div>

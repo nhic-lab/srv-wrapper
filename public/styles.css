@@ -68,4 +68,17 @@ button {
   padding: 10px 16px; font-weight: 600; font-size: 13px; cursor: pointer; width: fit-content;
 }
 button:hover { opacity: 0.85; }
+button.btn-secondary { background: transparent; color: var(--t-1000); border: 1px solid var(--b-hairline-strong); }
+button.btn-danger { background: transparent; color: var(--red); border: 1px solid var(--b-hairline-strong); padding: 6px 12px; font-size: 12px; }
+button.btn-ghost { background: transparent; color: var(--t-900); border: 1px solid var(--b-hairline-strong); padding: 6px 12px; font-size: 12px; }
 #bulk-result { margin-top: 12px; font-family: 'Geist Mono', monospace; font-size: 12px; color: var(--t-900); }
+
+.server-row {
+  display: flex; justify-content: space-between; align-items: center;
+  background: var(--bg-200); border: 1px solid var(--b-hairline); border-radius: 10px;
+  padding: 14px 18px; margin-bottom: 10px; max-width: 640px;
+}
+.server-row .meta { font-size: 13px; }
+.server-row .meta .id { font-family: 'Geist Mono', monospace; font-weight: 600; }
+.server-row .meta .detail { color: var(--t-900); font-size: 12px; margin-top: 4px; font-family: 'Geist Mono', monospace; }
+.server-row .actions { display: flex; gap: 8px; }
