@@ -1,6 +1,8 @@
 import { Client } from 'ssh2'
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import type { ServerRecord } from '../shared/types.js'
 import type { Registry } from './registry.js'
 
@@ -35,6 +37,26 @@ export class RegistryHostKeyStore implements HostKeyStore {
 
 export type ConnectFn = (server: ServerRecord, secret: string, hostKeyStore?: HostKeyStore) => Promise<any>
 
+/**
+ * Reads a private key file, restricted to ~/.ssh so a malicious or mistaken
+ * keyPath value (registered via the dashboard) can't be used to read arbitrary
+ * files on the machine. realpathSync resolves the full symlink chain first,
+ * so a symlink inside ~/.ssh pointing outside it is rejected too.
+ */
+function readPrivateKeyFile(keyPath: string): string {
+  const sshDir = fs.realpathSync(path.join(os.homedir(), '.ssh'))
+  let resolved: string
+  try {
+    resolved = fs.realpathSync(keyPath)
+  } catch {
+    throw new Error(`key file not found: ${keyPath}`)
+  }
+  if (resolved !== sshDir && !resolved.startsWith(sshDir + path.sep)) {
+    throw new Error(`key path must be inside ~/.ssh (got: ${keyPath})`)
+  }
+  return fs.readFileSync(resolved, 'utf-8')
+}
+
 function defaultConnect(server: ServerRecord, secret: string, hostKeyStore?: HostKeyStore): Promise<any> {
   return new Promise((resolve, reject) => {
     const client = new Client()
@@ -45,7 +67,7 @@ function defaultConnect(server: ServerRecord, secret: string, hostKeyStore?: Hos
       authOpts = { password: secret }
     } else {
       if (!server.keyPath) throw new Error('keyPath is required for key-based authentication')
-      authOpts = { privateKey: fs.readFileSync(server.keyPath, 'utf-8'), passphrase: secret }
+      authOpts = { privateKey: readPrivateKeyFile(server.keyPath), passphrase: secret }
     }
 
     const connectOpts: Record<string, unknown> = { host: server.host, port: server.port, username: server.username, ...authOpts }

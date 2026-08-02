@@ -202,22 +202,61 @@ describe('RegistryHostKeyStore', () => {
 
 describe('defaultConnect (key-based auth)', () => {
   it('reads the private key file from keyPath and passes privateKey/passphrase (not password) to ssh2', async () => {
+    const sshDir = path.join(os.homedir(), '.ssh')
+    const keyPath = path.join(sshDir, 'id_rsa')
+    const realpathSpy = vi.spyOn(fs, 'realpathSync').mockImplementation(((p: any) => (p === sshDir ? sshDir : keyPath)) as any)
     const readSpy = vi.spyOn(fs, 'readFileSync').mockReturnValue('FAKE_PRIVATE_KEY_CONTENTS' as any)
     try {
       const keyServer: ServerRecord = {
         id: 'srv-key1', host: '10.0.0.9', port: 22, username: 'deploy',
-        authMethod: 'key', keyPath: '/fake/path/id_rsa', createdAt: 0, updatedAt: 0,
+        authMethod: 'key', keyPath, createdAt: 0, updatedAt: 0,
       }
       const mgr = new SshManager(() => 'my-passphrase')
 
       await mgr.exec(keyServer, 'true', () => {})
 
-      expect(readSpy).toHaveBeenCalledWith('/fake/path/id_rsa', 'utf-8')
+      expect(readSpy).toHaveBeenCalledWith(keyPath, 'utf-8')
       expect(capturedConnectOpts.privateKey).toBe('FAKE_PRIVATE_KEY_CONTENTS')
       expect(capturedConnectOpts.passphrase).toBe('my-passphrase')
       expect(capturedConnectOpts.password).toBeUndefined()
     } finally {
       readSpy.mockRestore()
+      realpathSpy.mockRestore()
+    }
+  })
+
+  it('rejects a keyPath that resolves outside ~/.ssh', async () => {
+    const sshDir = path.join(os.homedir(), '.ssh')
+    const outsidePath = '/etc/passwd'
+    const realpathSpy = vi.spyOn(fs, 'realpathSync').mockImplementation(((p: any) => (p === sshDir ? sshDir : outsidePath)) as any)
+    try {
+      const keyServer: ServerRecord = {
+        id: 'srv-key2', host: '10.0.0.9', port: 22, username: 'deploy',
+        authMethod: 'key', keyPath: outsidePath, createdAt: 0, updatedAt: 0,
+      }
+      const mgr = new SshManager(() => 'my-passphrase')
+
+      await expect(mgr.exec(keyServer, 'true', () => {})).rejects.toThrow(/must be inside ~\/\.ssh/)
+    } finally {
+      realpathSpy.mockRestore()
+    }
+  })
+
+  it('rejects a keyPath that resolves to a symlink target outside ~/.ssh', async () => {
+    const sshDir = path.join(os.homedir(), '.ssh')
+    const symlinkInSsh = path.join(sshDir, 'sneaky_link')
+    const realTargetOutside = '/etc/shadow'
+    const realpathSpy = vi.spyOn(fs, 'realpathSync').mockImplementation(((p: any) => (p === sshDir ? sshDir : realTargetOutside)) as any)
+    try {
+      const keyServer: ServerRecord = {
+        id: 'srv-key3', host: '10.0.0.9', port: 22, username: 'deploy',
+        authMethod: 'key', keyPath: symlinkInSsh, createdAt: 0, updatedAt: 0,
+      }
+      const mgr = new SshManager(() => 'my-passphrase')
+
+      await expect(mgr.exec(keyServer, 'true', () => {})).rejects.toThrow(/must be inside ~\/\.ssh/)
+    } finally {
+      realpathSpy.mockRestore()
     }
   })
 })
