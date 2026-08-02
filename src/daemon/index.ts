@@ -19,7 +19,11 @@ async function main() {
 
   const registry = new Registry(srvRegistryDbPath())
   const logStore = new LogStore(srvLogDbPath())
-  const keychain = new Keychain(process.argv[1] ?? 'srvd')
+  // process.execPath (the node binary itself) is stable across restarts and
+  // builds, unlike process.argv[1] (the script path) — using it as the
+  // Keychain-trusted app means macOS stops re-prompting for access once
+  // trust is granted, instead of treating every dev-mode invocation as new.
+  const keychain = new Keychain(process.execPath)
   const sshManager = new SshManager(
     (serverId) => keychain.getSecret(serverId),
     undefined,
