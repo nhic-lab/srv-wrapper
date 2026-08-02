@@ -19,11 +19,15 @@ async function main() {
 
   const registry = new Registry(srvRegistryDbPath())
   const logStore = new LogStore(srvLogDbPath())
-  // process.execPath (the node binary itself) is stable across restarts and
-  // builds, unlike process.argv[1] (the script path) — using it as the
-  // Keychain-trusted app means macOS stops re-prompting for access once
-  // trust is granted, instead of treating every dev-mode invocation as new.
-  const keychain = new Keychain(process.execPath)
+  // Trust is scoped to THIS script's real path, not the generic `node`
+  // binary (process.execPath) — trusting `node` itself would grant Keychain
+  // access to any script run via that Node install, not just this daemon.
+  // realpathSync keeps the identity stable even if dist/ is reached via a
+  // symlink. This path is only stable for the BUILT daemon (dist/daemon/
+  // index.js) invoked the same way every time (e.g. via the launchd plist)
+  // — dev-mode (tsx) invocations don't have a stable script path and will
+  // still prompt on every run.
+  const keychain = new Keychain(fs.realpathSync(process.argv[1]))
   const sshManager = new SshManager(
     (serverId) => keychain.getSecret(serverId),
     undefined,
