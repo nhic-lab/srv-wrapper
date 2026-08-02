@@ -45,6 +45,7 @@ function renderRegisteredServers() {
 function startEditServer(id) {
   const server = state.servers.find((s) => s.id === id)
   if (!server) return
+  showServerFormError(null)
   const form = document.getElementById('server-form')
   form.elements.id.value = server.id
   form.elements.id.disabled = true
@@ -61,6 +62,7 @@ function startEditServer(id) {
 }
 
 function resetServerForm() {
+  showServerFormError(null)
   const form = document.getElementById('server-form')
   form.reset()
   form.elements.id.disabled = false
@@ -112,19 +114,37 @@ function connectLiveSocket() {
   }
 }
 
+function formatTimestamp(ms) {
+  if (!ms) return 'n/a'
+  return new Date(ms).toLocaleString()
+}
+
+function formatDuration(startedAt, endedAt) {
+  if (!startedAt || !endedAt) return null
+  const seconds = Math.round((endedAt - startedAt) / 1000)
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.floor(seconds / 60)
+  return `${minutes}m ${seconds % 60}s`
+}
+
 async function loadHistory() {
   const res = await fetch('/api/history')
   const runs = await res.json()
-  document.getElementById('history-feed').innerHTML = runs.map((r) => `
+  const sorted = [...runs].sort((a, b) => b.startedAt - a.startedAt)
+  document.getElementById('history-feed').innerHTML = sorted.map((r) => {
+    const duration = formatDuration(r.startedAt, r.endedAt)
+    return `
     <div class="vcard">
       <div class="top">
         <span class="id">${escapeHtml(r.serverId)}</span>
         <span class="${r.exitCode === 0 ? 'status status-idle' : 'status status-err'}">${escapeHtml(r.exitCode ?? 'n/a')}</span>
       </div>
       <div class="agent">agent: ${escapeHtml(r.agentLabel)} · ${escapeHtml(r.command ?? '')}</div>
+      <div class="run-timestamp">started: ${escapeHtml(formatTimestamp(r.startedAt))}${duration ? ` · duration: ${escapeHtml(duration)}` : ' · still running'}</div>
       <div class="vlog">${escapeHtml(r.output)}</div>
     </div>
-  `).join('')
+  `
+  }).join('')
 }
 
 function setupNav() {
@@ -141,9 +161,17 @@ function setupNav() {
   })
 }
 
+function showServerFormError(message) {
+  const el = document.getElementById('server-form-error')
+  if (!message) { el.hidden = true; el.textContent = ''; return }
+  el.hidden = false
+  el.textContent = message
+}
+
 function setupServerForm() {
   document.getElementById('server-form').addEventListener('submit', async (e) => {
     e.preventDefault()
+    showServerFormError(null)
     const formEl = e.target
     // FormData skips disabled fields, but a disabled id field during edit still needs to be sent.
     const wasDisabled = formEl.elements.id.disabled
@@ -152,10 +180,28 @@ function setupServerForm() {
     if (wasDisabled) formEl.elements.id.disabled = true
     const payload = Object.fromEntries(form.entries())
     payload.port = Number(payload.port)
-    const res = await fetch('/api/servers', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
-    })
-    if (res.ok) { resetServerForm(); loadServers() }
+    let res
+    try {
+      res = await fetch('/api/servers', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+      })
+    } catch (err) {
+      showServerFormError(`Request failed: ${err.message}`)
+      return
+    }
+    if (res.ok) {
+      resetServerForm()
+      loadServers()
+    } else {
+      let message = `Request failed (${res.status})`
+      try {
+        const body = await res.json()
+        if (body?.error) message = body.error
+      } catch {
+        // response wasn't JSON — fall back to the generic status message above
+      }
+      showServerFormError(message)
+    }
   })
 
   document.getElementById('server-form-cancel').addEventListener('click', () => resetServerForm())
