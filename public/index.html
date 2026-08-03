@@ -2,70 +2,138 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>srv — live agent activity</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>srv — ops console</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=Fragment+Mono&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
-  <div class="vmock" id="app">
-    <div class="vtopbar">
-      <div class="vbrand"><span class="sq"></span> srv</div>
-      <div class="vnav">
-        <span class="nav-item active" data-view="live">Live</span>
-        <span class="nav-item" data-view="history">History</span>
-        <span class="nav-item" data-view="servers">Servers</span>
+  <div class="app" id="app">
+    <div class="grain" aria-hidden="true"></div>
+
+    <header class="topbar">
+      <div class="brand"><span class="mark"></span> srv <span class="brand-sub">ops console</span></div>
+      <div class="conn" id="conn-status" data-state="connecting">
+        <span class="conn-dot"></span>
+        <span class="conn-label">connecting…</span>
       </div>
-    </div>
-    <div class="vbody">
-      <div class="vsidebar">
-        <div class="label">Servers</div>
-        <div id="server-list"></div>
-      </div>
-      <div class="vmain">
-        <section id="view-live">
-          <div class="vrowhead">
-            <h4>Live activity</h4>
-            <span class="vpill" id="live-summary">0 running</span>
+      <button type="button" class="kbtn" id="open-palette">
+        <span>Jump to…</span><kbd>⌘K</kbd>
+      </button>
+    </header>
+
+    <div class="body">
+      <aside class="sidebar">
+        <input type="search" class="search" id="server-search" placeholder="Search servers…" />
+
+        <div class="side-section" id="active-section" hidden>
+          <div class="side-label">Active</div>
+          <div id="active-server-list"></div>
+        </div>
+
+        <div class="side-section">
+          <div class="side-label">Servers</div>
+          <div id="server-list"></div>
+        </div>
+
+        <nav class="side-nav" aria-label="Views">
+          <button type="button" class="nav-item active" data-view="live"><span class="nav-key">1</span>Live</button>
+          <button type="button" class="nav-item" data-view="history"><span class="nav-key">2</span>History</button>
+          <button type="button" class="nav-item" data-view="servers"><span class="nav-key">3</span>Servers</button>
+        </nav>
+      </aside>
+
+      <main class="main">
+        <section id="view-live" class="view">
+          <div class="rowhead">
+            <h1>Live activity</h1>
+            <span class="pill" id="live-summary">0 running</span>
           </div>
-          <div id="live-feed"></div>
+          <div id="live-feed" class="stack"></div>
         </section>
 
-        <section id="view-history" hidden>
-          <div class="vrowhead"><h4>History</h4></div>
-          <div id="history-feed"></div>
-        </section>
-
-        <section id="view-servers" hidden>
-          <div class="vrowhead"><h4>Registered servers</h4></div>
-          <div id="registered-servers"></div>
-
-          <div class="vrowhead" style="margin-top:32px"><h4 id="server-form-title">Register a server</h4></div>
-          <form id="server-form" class="vform">
-            <input name="id" placeholder="server id (e.g. srv-a1)" required />
-            <input name="host" placeholder="host" required />
-            <input name="port" placeholder="port" value="22" required />
-            <input name="username" placeholder="username" required />
-            <select name="authMethod">
-              <option value="password">password</option>
-              <option value="key">key</option>
+        <section id="view-history" class="view" hidden>
+          <div class="rowhead">
+            <h1>History</h1>
+          </div>
+          <div class="filter-row">
+            <input type="search" id="history-search" placeholder="Filter by server id or command…" />
+            <select id="history-exit-filter">
+              <option value="">Any exit code</option>
+              <option value="ok">Exit 0</option>
+              <option value="err">Non-zero</option>
+              <option value="running">Still running</option>
             </select>
-            <input name="secret" placeholder="password or key passphrase" type="password" required />
-            <div style="display:flex; gap:10px;">
-              <button type="submit" id="server-form-submit">Add server</button>
-              <button type="button" id="server-form-cancel" hidden>Cancel edit</button>
-            </div>
-            <div id="server-form-error" class="form-error" hidden></div>
-          </form>
-
-          <div class="vrowhead" style="margin-top:32px"><h4>Bulk import (JSON)</h4></div>
-          <textarea id="bulk-json" class="vtextarea" placeholder='[{"id":"srv-a1","host":"...","port":22,"username":"...","authMethod":"password","secret":"..."}]'></textarea>
-          <button id="bulk-submit">Import</button>
-          <div id="bulk-result"></div>
+          </div>
+          <div id="history-feed" class="stack"></div>
         </section>
+
+        <section id="view-servers" class="view" hidden>
+          <div class="rowhead">
+            <h1>Registered servers</h1>
+            <button type="button" class="btn" id="open-add-server">+ Add server</button>
+          </div>
+          <div id="registered-servers" class="stack"></div>
+
+          <div class="rowhead" style="margin-top:40px">
+            <h1 class="h2">Bulk import</h1>
+          </div>
+          <p class="hint">Paste a JSON array of server objects to register several at once.</p>
+          <textarea id="bulk-json" class="textarea" placeholder='[{"id":"srv-a1","host":"...","port":22,"username":"...","authMethod":"password","secret":"..."}]'></textarea>
+          <button type="button" class="btn btn-secondary" id="bulk-submit" style="margin-top:12px">Import</button>
+        </section>
+      </main>
+    </div>
+
+    <!-- Server register/edit slide-over -->
+    <div class="scrim" id="server-scrim" hidden></div>
+    <aside class="slideover" id="server-slideover" hidden aria-hidden="true">
+      <div class="slideover-head">
+        <h2 id="server-form-title">Register a server</h2>
+        <button type="button" class="icon-btn" id="server-form-close" aria-label="Close">✕</button>
+      </div>
+      <form id="server-form" class="form">
+        <label>Server id<input name="id" placeholder="srv-a1" required autocomplete="off" /></label>
+        <label>Host<input name="host" placeholder="10.0.0.4 or example.internal" required autocomplete="off" /></label>
+        <div class="form-row">
+          <label>Port<input name="port" type="number" value="22" required /></label>
+          <label>Username<input name="username" placeholder="deploy" required autocomplete="off" /></label>
+        </div>
+        <label>Auth method
+          <select name="authMethod">
+            <option value="password">Password</option>
+            <option value="key">Private key</option>
+          </select>
+        </label>
+        <label>Secret<input name="secret" placeholder="password or key passphrase" type="password" required autocomplete="new-password" /></label>
+        <div id="server-form-error" class="form-error" hidden></div>
+        <div class="form-actions">
+          <button type="submit" class="btn" id="server-form-submit">Add server</button>
+          <button type="button" class="btn btn-ghost" id="server-form-cancel">Cancel</button>
+        </div>
+      </form>
+    </aside>
+
+    <!-- Confirm dialog -->
+    <div class="scrim" id="confirm-scrim" hidden></div>
+    <div class="confirm-dialog" id="confirm-dialog" hidden role="alertdialog" aria-modal="true">
+      <p id="confirm-message"></p>
+      <div class="form-actions">
+        <button type="button" class="btn btn-danger" id="confirm-ok">Delete</button>
+        <button type="button" class="btn btn-ghost" id="confirm-cancel">Cancel</button>
       </div>
     </div>
+
+    <!-- Command palette -->
+    <div class="scrim" id="palette-scrim" hidden></div>
+    <div class="palette" id="palette" hidden role="dialog" aria-modal="true" aria-label="Command palette">
+      <input type="text" id="palette-input" placeholder="Jump to a server, view, or action…" autocomplete="off" />
+      <div class="palette-results" id="palette-results"></div>
+    </div>
+
+    <div class="toasts" id="toasts" aria-live="polite"></div>
   </div>
   <script src="/app.js"></script>
 </body>
