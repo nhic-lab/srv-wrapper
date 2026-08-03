@@ -114,6 +114,12 @@
           </select>
         </label>
         <label>Secret<input name="secret" placeholder="password or key passphrase" type="password" required autocomplete="new-password" /></label>
+        <div class="jump-section">
+          <div class="jump-label">Via jump hosts <span class="jump-optional">optional</span></div>
+          <div id="jump-hops" class="jump-hops"></div>
+          <button type="button" class="btn btn-ghost btn-sm" id="jump-add-hop">+ Add hop</button>
+          <div class="jump-path" id="jump-path-summary"></div>
+        </div>
         <div id="server-form-error" class="form-error" hidden></div>
         <div class="form-actions">
           <button type="submit" class="btn" id="server-form-submit">Add server</button>

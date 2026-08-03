@@ -313,6 +313,78 @@ describe('dashboard-server', () => {
     expect(res.status).toBe(400)
   })
 
+  it('POST /api/servers persists a valid jumpChain and round-trips it via GET /api/servers', async () => {
+    const { app } = createDashboardApp({ registry, keychain, logStore })
+    await request(app)
+      .post('/api/servers')
+      .send({ id: 'bastion-1', host: 'b1', port: 22, username: 'u', authMethod: 'password', secret: 's' })
+    await request(app)
+      .post('/api/servers')
+      .send({ id: 'bastion-2', host: 'b2', port: 22, username: 'u', authMethod: 'password', secret: 's' })
+
+    const res = await request(app)
+      .post('/api/servers')
+      .send({
+        id: 'target-1', host: 'h', port: 22, username: 'u', authMethod: 'password', secret: 's',
+        jumpChain: ['bastion-1', 'bastion-2'],
+      })
+
+    expect(res.status).toBe(201)
+    expect(res.body.jumpChain).toEqual(['bastion-1', 'bastion-2'])
+
+    const list = await request(app).get('/api/servers')
+    const target = list.body.find((r: any) => r.id === 'target-1')
+    expect(target.jumpChain).toEqual(['bastion-1', 'bastion-2'])
+  })
+
+  it('POST /api/servers rejects a jumpChain referencing an unknown server id with 400', async () => {
+    const { app } = createDashboardApp({ registry, keychain, logStore })
+    const res = await request(app)
+      .post('/api/servers')
+      .send({
+        id: 'target-2', host: 'h', port: 22, username: 'u', authMethod: 'password', secret: 's',
+        jumpChain: ['no-such-server'],
+      })
+
+    expect(res.status).toBe(400)
+    expect(res.body.error).toMatch(/unknown server id "no-such-server"/)
+    expect(registry.get('target-2')).toBeUndefined()
+  })
+
+  it('POST /api/servers rejects a jumpChain that would create a cycle, identifying the offending id', async () => {
+    const { app } = createDashboardApp({ registry, keychain, logStore })
+    await request(app)
+      .post('/api/servers')
+      .send({ id: 'bastion-x', host: 'bx', port: 22, username: 'u', authMethod: 'password', secret: 's' })
+
+    // Direct self-reference.
+    const selfRes = await request(app)
+      .post('/api/servers')
+      .send({
+        id: 'target-3', host: 'h', port: 22, username: 'u', authMethod: 'password', secret: 's',
+        jumpChain: ['target-3'],
+      })
+    expect(selfRes.status).toBe(400)
+    expect(selfRes.body.error).toMatch(/"target-3"/)
+    expect(registry.get('target-3')).toBeUndefined()
+
+    // Indirect cycle: target-4 -> bastion-x, then edit bastion-x to jump through target-4.
+    await request(app)
+      .post('/api/servers')
+      .send({
+        id: 'target-4', host: 'h', port: 22, username: 'u', authMethod: 'password', secret: 's',
+        jumpChain: ['bastion-x'],
+      })
+    const cycleRes = await request(app)
+      .post('/api/servers')
+      .send({
+        id: 'bastion-x', host: 'bx', port: 22, username: 'u', authMethod: 'password', secret: 's',
+        jumpChain: ['target-4'], isEdit: true,
+      })
+    expect(cycleRes.status).toBe(400)
+    expect(cycleRes.body.error).toMatch(/"bastion-x"/)
+  })
+
   it('rejects a WebSocket connection to /api/live from a disallowed Origin', async () => {
     const { app } = createDashboardApp({ registry, keychain, logStore })
     const server = http.createServer(app)

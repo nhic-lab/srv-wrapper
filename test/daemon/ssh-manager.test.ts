@@ -166,6 +166,146 @@ describe('SshManager', () => {
   })
 })
 
+describe('SshManager jump chain connecting', () => {
+  const bastion1: ServerRecord = {
+    id: 'bastion-1', host: '10.0.0.1', port: 22, username: 'deploy',
+    authMethod: 'password', createdAt: 0, updatedAt: 0,
+  }
+  const bastion2: ServerRecord = {
+    id: 'bastion-2', host: '10.0.0.2', port: 22, username: 'deploy',
+    authMethod: 'password', createdAt: 0, updatedAt: 0,
+  }
+  const target: ServerRecord = {
+    id: 'target-1', host: '10.0.0.9', port: 22, username: 'deploy',
+    authMethod: 'password', jumpChain: ['bastion-1', 'bastion-2'], createdAt: 0, updatedAt: 0,
+  }
+
+  function makeFakeClient(name: string) {
+    const channel = fakeExecChannel()
+    return {
+      name,
+      end: vi.fn(),
+      forwardOut: vi.fn((_srcIp: string, _srcPort: number, dstHost: string, dstPort: number, cb: (err: any, stream: any) => void) => {
+        cb(null, { fakeStream: true, dstHost, dstPort })
+      }),
+      exec: vi.fn((_cmd: string, cb: (err: any, channel: any) => void) => {
+        cb(null, channel)
+        queueMicrotask(() => channel.emit('close', 0))
+      }),
+    }
+  }
+
+  function makeLookup() {
+    const registryMap = new Map<string, ServerRecord>([
+      ['bastion-1', bastion1],
+      ['bastion-2', bastion2],
+    ])
+    return (id: string) => registryMap.get(id)
+  }
+
+  it('connects hop-by-hop via forwardOut, calling connectFn with a tunneled stream for each hop after the first', async () => {
+    const clients: Record<string, any> = {
+      'bastion-1': makeFakeClient('bastion-1'),
+      'bastion-2': makeFakeClient('bastion-2'),
+      'target-1': makeFakeClient('target-1'),
+    }
+    const connectFn = vi.fn(async (rec: ServerRecord, _secret: string, _hostKeyStore: any, viaStream?: any) => {
+      if (rec.id === 'bastion-1') {
+        expect(viaStream).toBeUndefined()
+      } else {
+        expect(viaStream).toBeDefined()
+      }
+      return clients[rec.id]
+    })
+    const mgr = new SshManager(() => 'secret', connectFn as any, undefined, makeLookup())
+
+    const exitCode = await mgr.exec(target, 'true', () => {})
+
+    expect(exitCode).toBe(0)
+    expect(connectFn).toHaveBeenCalledTimes(3)
+    expect(clients['bastion-1'].forwardOut).toHaveBeenCalledWith('127.0.0.1', 0, '10.0.0.2', 22, expect.any(Function))
+    expect(clients['bastion-2'].forwardOut).toHaveBeenCalledWith('127.0.0.1', 0, '10.0.0.9', 22, expect.any(Function))
+    // Cleanup unwinds target first, back to the first hop.
+    expect(clients['target-1'].end).toHaveBeenCalled()
+    expect(clients['bastion-2'].end).toHaveBeenCalled()
+    expect(clients['bastion-1'].end).toHaveBeenCalled()
+  })
+
+  it('closes every intermediate client (in reverse order) even when the exec fails on the target hop', async () => {
+    const clients: Record<string, any> = {
+      'bastion-1': makeFakeClient('bastion-1'),
+      'target-1': {
+        end: vi.fn(),
+        exec: vi.fn((_cmd: string, cb: (err: any, channel: any) => void) => cb(new Error('exec failed'), null)),
+      },
+    }
+    const soloTarget: ServerRecord = { ...target, jumpChain: ['bastion-1'] }
+    const connectFn = vi.fn(async (rec: ServerRecord) => clients[rec.id])
+    const mgr = new SshManager(() => 'secret', connectFn as any, undefined, makeLookup())
+
+    await expect(mgr.exec(soloTarget, 'true', () => {})).rejects.toThrow('exec failed')
+    expect(clients['target-1'].end).toHaveBeenCalled()
+    expect(clients['bastion-1'].end).toHaveBeenCalled()
+  })
+
+  it('closes already-connected earlier hops if a later hop fails to connect (e.g. auth failure partway through the chain)', async () => {
+    const bastion1Client = makeFakeClient('bastion-1')
+    const connectFn = vi.fn(async (rec: ServerRecord) => {
+      if (rec.id === 'bastion-1') return bastion1Client
+      throw new Error('auth failed for bastion-2')
+    })
+    const mgr = new SshManager(() => 'secret', connectFn as any, undefined, makeLookup())
+
+    await expect(mgr.exec(target, 'true', () => {})).rejects.toThrow('auth failed for bastion-2')
+    expect(bastion1Client.end).toHaveBeenCalled()
+  })
+
+  it('rejects with a clear error when the jumpChain references an unregistered server id', async () => {
+    const badTarget: ServerRecord = { ...target, jumpChain: ['ghost-host'] }
+    const connectFn = vi.fn()
+    const mgr = new SshManager(() => 'secret', connectFn as any, undefined, () => undefined)
+
+    await expect(mgr.exec(badTarget, 'true', () => {})).rejects.toThrow(/unknown server id "ghost-host"/)
+    expect(connectFn).not.toHaveBeenCalled()
+  })
+
+  it('rejects when the jumpChain would create a cycle', async () => {
+    const selfRefTarget: ServerRecord = { ...target, jumpChain: ['target-1'] }
+    const connectFn = vi.fn()
+    const mgr = new SshManager(() => 'secret', connectFn as any, undefined, makeLookup())
+
+    await expect(mgr.exec(selfRefTarget, 'true', () => {})).rejects.toThrow(/cycle/)
+    expect(connectFn).not.toHaveBeenCalled()
+  })
+
+  it('startSession/stopSession keep every hop client alive until stopSession, then close them all in reverse', async () => {
+    const sessionChannel = fakeExecChannel()
+    sessionChannel.write = vi.fn()
+    sessionChannel.end = vi.fn()
+    const clients: Record<string, any> = {
+      'bastion-1': makeFakeClient('bastion-1'),
+      'target-1': {
+        end: vi.fn(),
+        shell: vi.fn((cb: (err: any, ch: any) => void) => cb(null, sessionChannel)),
+      },
+    }
+    const soloTarget: ServerRecord = { ...target, jumpChain: ['bastion-1'] }
+    const connectFn = vi.fn(async (rec: ServerRecord) => clients[rec.id])
+    const mgr = new SshManager(() => 'secret', connectFn as any, undefined, makeLookup())
+
+    const sessionId = await mgr.startSession(soloTarget, () => {})
+    mgr.sendToSession(sessionId, 'echo hi\n')
+    expect(sessionChannel.write).toHaveBeenCalledWith('echo hi\n')
+    expect(clients['bastion-1'].end).not.toHaveBeenCalled()
+    expect(clients['target-1'].end).not.toHaveBeenCalled()
+
+    mgr.stopSession(sessionId)
+    expect(sessionChannel.end).toHaveBeenCalled()
+    expect(clients['target-1'].end).toHaveBeenCalled()
+    expect(clients['bastion-1'].end).toHaveBeenCalled()
+  })
+})
+
 describe('RegistryHostKeyStore', () => {
   let dbPath: string
   let registry: Registry

@@ -31,7 +31,8 @@ async function main() {
   const sshManager = new SshManager(
     (serverId) => keychain.getSecret(serverId),
     undefined,
-    new RegistryHostKeyStore(registry)
+    new RegistryHostKeyStore(registry),
+    (serverId) => registry.get(serverId)
   )
 
   const { app, broadcast } = createDashboardApp({ registry, keychain, logStore })

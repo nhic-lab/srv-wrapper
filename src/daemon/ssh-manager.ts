@@ -5,6 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import type { ServerRecord } from '../shared/types.js'
 import type { Registry } from './registry.js'
+import { resolveJumpPath } from './jump-chain.js'
 
 export interface HostKeyStore {
   get(serverId: string): string | undefined
@@ -35,7 +36,19 @@ export class RegistryHostKeyStore implements HostKeyStore {
   }
 }
 
-export type ConnectFn = (server: ServerRecord, secret: string, hostKeyStore?: HostKeyStore) => Promise<any>
+/**
+ * `viaStream`, when present, is a duplex stream obtained from a previous hop's
+ * `client.forwardOut(...)` — the connection should be made through it (ssh2's
+ * `sock` connect option) instead of `server.host`/`server.port`. It's an
+ * optional 4th param so the non-chained call site can keep calling connectFn
+ * with exactly 3 positional args, preserving the existing contract/tests.
+ */
+export type ConnectFn = (
+  server: ServerRecord,
+  secret: string,
+  hostKeyStore?: HostKeyStore,
+  viaStream?: any
+) => Promise<any>
 
 /**
  * Reads a private key file, restricted to ~/.ssh so a malicious or mistaken
@@ -57,7 +70,7 @@ function readPrivateKeyFile(keyPath: string): string {
   return fs.readFileSync(resolved, 'utf-8')
 }
 
-function defaultConnect(server: ServerRecord, secret: string, hostKeyStore?: HostKeyStore): Promise<any> {
+function defaultConnect(server: ServerRecord, secret: string, hostKeyStore?: HostKeyStore, viaStream?: any): Promise<any> {
   return new Promise((resolve, reject) => {
     const client = new Client()
     client.on('ready', () => resolve(client))
@@ -70,7 +83,9 @@ function defaultConnect(server: ServerRecord, secret: string, hostKeyStore?: Hos
       authOpts = { privateKey: readPrivateKeyFile(server.keyPath), passphrase: secret }
     }
 
-    const connectOpts: Record<string, unknown> = { host: server.host, port: server.port, username: server.username, ...authOpts }
+    const connectOpts: Record<string, unknown> = viaStream
+      ? { sock: viaStream, username: server.username, ...authOpts }
+      : { host: server.host, port: server.port, username: server.username, ...authOpts }
     if (hostKeyStore) {
       connectOpts.hostHash = 'sha256'
       connectOpts.hostVerifier = (fingerprint: string) => {
@@ -87,8 +102,19 @@ function defaultConnect(server: ServerRecord, secret: string, hostKeyStore?: Hos
 }
 
 interface OpenSession {
-  client: any
+  clients: any[]
   channel: any
+}
+
+function closeChainClients(clients: any[]): void {
+  // Unwind in reverse: target first, back to the first hop.
+  for (let i = clients.length - 1; i >= 0; i--) {
+    try {
+      clients[i].end()
+    } catch {
+      // already closed; nothing to do
+    }
+  }
 }
 
 export class SshManager {
@@ -97,11 +123,55 @@ export class SshManager {
   constructor(
     private secretResolver: (serverId: string) => string,
     private connectFn: ConnectFn = defaultConnect,
-    private hostKeyStore: HostKeyStore = new InMemoryHostKeyStore()
+    private hostKeyStore: HostKeyStore = new InMemoryHostKeyStore(),
+    private serverLookup: (serverId: string) => ServerRecord | undefined = () => undefined
   ) {}
 
   hasSession(sessionId: string): boolean {
     return this.sessions.has(sessionId)
+  }
+
+  /**
+   * Connects to `server`, tunneling through its fully-expanded jumpChain (if
+   * any) one hop at a time via `client.forwardOut`. Returns every connected
+   * Client in hop order, last entry being the connection to `server` itself.
+   * When there's no jumpChain this degenerates to a single direct connect,
+   * calling connectFn with exactly the original 3 positional args.
+   */
+  private async connectChain(server: ServerRecord): Promise<any[]> {
+    const hopIds =
+      server.jumpChain && server.jumpChain.length > 0
+        ? resolveJumpPath(server.id, server.jumpChain, this.serverLookup)
+        : [server.id]
+
+    const clients: any[] = []
+    try {
+      for (let i = 0; i < hopIds.length; i++) {
+        const id = hopIds[i]
+        const record = id === server.id ? server : this.serverLookup(id)
+        if (!record) throw new Error(`jump chain references unknown server id "${id}"`)
+        const secret = this.secretResolver(id)
+
+        if (i === 0) {
+          clients.push(await this.connectFn(record, secret, this.hostKeyStore))
+        } else {
+          const previousClient = clients[clients.length - 1]
+          const stream = await new Promise<any>((resolve, reject) => {
+            previousClient.forwardOut('127.0.0.1', 0, record.host, record.port, (err: any, stream: any) => {
+              if (err) return reject(err)
+              resolve(stream)
+            })
+          })
+          clients.push(await this.connectFn(record, secret, this.hostKeyStore, stream))
+        }
+      }
+    } catch (err) {
+      // A later hop failed (bad auth, unreachable, etc.) — close whatever
+      // earlier hops already connected instead of leaking them.
+      closeChainClients(clients)
+      throw err
+    }
+    return clients
   }
 
   async exec(
@@ -109,15 +179,15 @@ export class SshManager {
     command: string,
     onData: (stream: 'stdout' | 'stderr', chunk: string) => void
   ): Promise<number> {
-    const secret = this.secretResolver(server.id)
-    const client = await this.connectFn(server, secret, this.hostKeyStore)
+    const clients = await this.connectChain(server)
+    const client = clients[clients.length - 1]
 
     return new Promise((resolve, reject) => {
       let settled = false
       client.exec(command, (err: any, channel: any) => {
         if (err) {
           settled = true
-          client.end()
+          closeChainClients(clients)
           return reject(err)
         }
         channel.on('data', (data: Buffer) => onData('stdout', data.toString()))
@@ -125,13 +195,13 @@ export class SshManager {
         channel.on('close', (code: number) => {
           if (settled) return
           settled = true
-          client.end()
+          closeChainClients(clients)
           resolve(code)
         })
         channel.on('error', (chanErr: any) => {
           if (settled) return
           settled = true
-          client.end()
+          closeChainClients(clients)
           reject(chanErr)
         })
       })
@@ -139,8 +209,8 @@ export class SshManager {
   }
 
   async startSession(server: ServerRecord, onData: (chunk: string) => void): Promise<string> {
-    const secret = this.secretResolver(server.id)
-    const client = await this.connectFn(server, secret, this.hostKeyStore)
+    const clients = await this.connectChain(server)
+    const client = clients[clients.length - 1]
 
     const channel = await new Promise<any>((resolve, reject) => {
       client.shell((err: any, ch: any) => (err ? reject(err) : resolve(ch)))
@@ -151,14 +221,10 @@ export class SshManager {
     channel.on('error', (err: any) => {
       console.error(`srvd: session channel error for ${sessionId}:`, err)
       this.sessions.delete(sessionId)
-      try {
-        client.end()
-      } catch {
-        // already closed; nothing to do
-      }
+      closeChainClients(clients)
     })
 
-    this.sessions.set(sessionId, { client, channel })
+    this.sessions.set(sessionId, { clients, channel })
     return sessionId
   }
 
@@ -172,7 +238,7 @@ export class SshManager {
     const session = this.sessions.get(sessionId)
     if (!session) return
     session.channel.end()
-    session.client.end()
+    closeChainClients(session.clients)
     this.sessions.delete(sessionId)
   }
 }

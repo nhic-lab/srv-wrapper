@@ -5,6 +5,7 @@ const state = {
   historyLoaded: false,
   view: localStorage.getItem('srv.lastView') || 'live',
   editingServerId: null,
+  jumpChainDraft: [], // ordered list of server ids picked in the "Via jump hosts" section of the open form
 }
 
 const liveCards = new Map() // requestId -> { root, body, stickToBottom }
@@ -80,6 +81,29 @@ function activeOverlayContainer() {
   return null
 }
 
+// ---------- jump chain resolution (client-side mirror of the daemon's validator, for live preview only —
+// the daemon re-validates authoritatively on submit) ----------
+
+function jumpChainLookup(id) {
+  return state.servers.find((s) => s.id === id)
+}
+
+function resolveJumpPathLocal(targetId, proposedChain) {
+  const seen = new Set([targetId])
+  const path = []
+  const expandHop = (id) => {
+    if (seen.has(id)) throw new Error(`"${id}" would be reached more than once`)
+    seen.add(id)
+    const record = jumpChainLookup(id)
+    if (!record) throw new Error(`unknown server id "${id}"`)
+    ;(record.jumpChain || []).forEach(expandHop)
+    path.push(id)
+  }
+  proposedChain.forEach(expandHop)
+  path.push(targetId)
+  return path
+}
+
 // ---------- servers: load + sidebar ----------
 
 async function loadServers() {
@@ -153,6 +177,7 @@ function renderRegisteredServers() {
       <div class="meta">
         <div class="id">${escapeHtml(s.id)}</div>
         <div class="detail">${escapeHtml(s.username)}@${escapeHtml(s.host)}:${escapeHtml(s.port)} · ${escapeHtml(s.authMethod)}</div>
+        ${s.jumpChain && s.jumpChain.length ? `<div class="detail-jump">via ${s.jumpChain.map(escapeHtml).join(' → ')}</div>` : ''}
       </div>
       <div class="actions">
         <button type="button" class="btn btn-ghost" data-action="edit">Edit</button>
@@ -186,15 +211,18 @@ function openServerForm(id = null) {
     form.elements.authMethod.value = server.authMethod
     form.elements.secret.placeholder = 'leave blank to keep the current password or key passphrase'
     form.elements.secret.required = false
+    state.jumpChainDraft = server.jumpChain ? [...server.jumpChain] : []
     document.getElementById('server-form-title').textContent = `Edit ${server.id}`
     document.getElementById('server-form-submit').textContent = 'Save changes'
   } else {
     form.elements.id.disabled = false
     form.elements.secret.placeholder = 'password or key passphrase'
     form.elements.secret.required = true
+    state.jumpChainDraft = []
     document.getElementById('server-form-title').textContent = 'Register a server'
     document.getElementById('server-form-submit').textContent = 'Add server'
   }
+  renderJumpHops()
   document.getElementById('server-scrim').hidden = false
   const panel = document.getElementById('server-slideover')
   panel.hidden = false
@@ -208,6 +236,105 @@ function closeServerForm() {
   panel.hidden = true
   panel.setAttribute('aria-hidden', 'true')
   state.editingServerId = null
+  state.jumpChainDraft = []
+}
+
+// ---------- jump hosts picker (inside the server slide-over) ----------
+
+function currentFormTargetId() {
+  return document.getElementById('server-form').elements.id.value.trim()
+}
+
+function jumpHopOptions(idx) {
+  const targetId = currentFormTargetId() || ' __unsaved__'
+  const chain = state.jumpChainDraft
+  return state.servers.filter((s) => {
+    if (s.id === targetId) return false
+    if (chain.some((id, j) => j !== idx && id === s.id)) return false
+    const candidateChain = chain.map((id, j) => (j === idx ? s.id : id))
+    try {
+      resolveJumpPathLocal(targetId, candidateChain)
+      return true
+    } catch {
+      return false
+    }
+  })
+}
+
+function renderJumpHops() {
+  const container = document.getElementById('jump-hops')
+  if (!state.jumpChainDraft.length) {
+    container.innerHTML = `<div class="jump-hops-empty">No jump hosts — connects directly.</div>`
+  } else {
+    container.innerHTML = state.jumpChainDraft.map((val, idx) => {
+      const opts = jumpHopOptions(idx)
+      const optionsHtml = opts.map((s) => `<option value="${escapeHtml(s.id)}"${s.id === val ? ' selected' : ''}>${escapeHtml(s.id)}</option>`).join('')
+      return `<div class="jump-hop" data-idx="${idx}">
+        <span class="jump-hop-num">${idx + 1}</span>
+        <select class="jump-hop-select" data-idx="${idx}">
+          <option value="">Select a server…</option>
+          ${optionsHtml}
+        </select>
+        <button type="button" class="icon-btn jump-hop-remove" data-idx="${idx}" aria-label="Remove hop ${idx + 1}">✕</button>
+      </div>`
+    }).join('')
+  }
+
+  container.querySelectorAll('.jump-hop-select').forEach((sel) => {
+    sel.addEventListener('change', (e) => {
+      state.jumpChainDraft[Number(e.target.dataset.idx)] = e.target.value
+      renderJumpHops()
+    })
+  })
+  container.querySelectorAll('.jump-hop-remove').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      state.jumpChainDraft.splice(Number(btn.dataset.idx), 1)
+      renderJumpHops()
+    })
+  })
+
+  const targetId = currentFormTargetId()
+  const used = new Set(state.jumpChainDraft.filter(Boolean))
+  const availableCount = state.servers.filter((s) => s.id !== targetId && !used.has(s.id)).length
+  document.getElementById('jump-add-hop').disabled = availableCount === 0
+
+  renderJumpPathSummary()
+}
+
+function renderJumpPathSummary() {
+  const el = document.getElementById('jump-path-summary')
+  const targetId = currentFormTargetId() || 'this server'
+  const chain = state.jumpChainDraft
+  el.classList.remove('jump-path-error')
+
+  if (!chain.length) {
+    el.textContent = `you → ${targetId} (direct connection)`
+    return
+  }
+  if (chain.some((id) => !id)) {
+    el.textContent = 'Select a server for every hop to see the resolved path.'
+    return
+  }
+  try {
+    const path = resolveJumpPathLocal(currentFormTargetId() || ' __unsaved__', chain)
+    const displayPath = [...path.slice(0, -1), targetId]
+    el.textContent = `you → ${displayPath.join(' → ')}`
+  } catch (err) {
+    el.classList.add('jump-path-error')
+    el.textContent = `Cycle detected: ${err.message}`
+  }
+}
+
+function setupJumpHosts() {
+  document.getElementById('jump-add-hop').addEventListener('click', () => {
+    state.jumpChainDraft.push('')
+    renderJumpHops()
+  })
+  // Typing a new server's id can change which other servers would be valid hop
+  // choices (e.g. it now matches an existing id) — keep the picker in sync.
+  document.getElementById('server-form').elements.id.addEventListener('input', () => {
+    if (!state.editingServerId) renderJumpHops()
+  })
 }
 
 function showServerFormError(message) {
@@ -234,6 +361,12 @@ function setupServerForm() {
     const payload = Object.fromEntries(form.entries())
     payload.port = Number(payload.port)
     payload.isEdit = Boolean(state.editingServerId)
+
+    if (state.jumpChainDraft.some((id) => !id)) {
+      showServerFormError('Select a server for every jump hop, or remove the empty one.')
+      return
+    }
+    payload.jumpChain = state.jumpChainDraft.filter(Boolean)
 
     let res
     try {
@@ -695,6 +828,7 @@ document.getElementById('live-feed').innerHTML = liveEmptyHtml()
 loadServers()
 setupNav()
 setupServerForm()
+setupJumpHosts()
 setupBulkImport()
 setupConfirmDialog()
 setupPalette()

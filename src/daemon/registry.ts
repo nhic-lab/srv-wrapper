@@ -24,6 +24,9 @@ export class Registry {
     if (!cols.some((c) => c.name === 'host_key_fingerprint')) {
       this.db.exec(`ALTER TABLE servers ADD COLUMN host_key_fingerprint TEXT`)
     }
+    if (!cols.some((c) => c.name === 'jump_chain')) {
+      this.db.exec(`ALTER TABLE servers ADD COLUMN jump_chain TEXT`)
+    }
   }
 
   upsert(record: Omit<ServerRecord, 'createdAt' | 'updatedAt'>): ServerRecord {
@@ -33,11 +36,11 @@ export class Registry {
 
     this.db
       .prepare(
-        `INSERT INTO servers (id, host, port, username, auth_method, key_path, created_at, updated_at)
-         VALUES (@id, @host, @port, @username, @authMethod, @keyPath, @createdAt, @updatedAt)
+        `INSERT INTO servers (id, host, port, username, auth_method, key_path, jump_chain, created_at, updated_at)
+         VALUES (@id, @host, @port, @username, @authMethod, @keyPath, @jumpChain, @createdAt, @updatedAt)
          ON CONFLICT(id) DO UPDATE SET
            host=excluded.host, port=excluded.port, username=excluded.username,
-           auth_method=excluded.auth_method, key_path=excluded.key_path, updated_at=excluded.updated_at`
+           auth_method=excluded.auth_method, key_path=excluded.key_path, jump_chain=excluded.jump_chain, updated_at=excluded.updated_at`
       )
       .run({
         id: record.id,
@@ -46,6 +49,7 @@ export class Registry {
         username: record.username,
         authMethod: record.authMethod,
         keyPath: record.keyPath ?? null,
+        jumpChain: record.jumpChain && record.jumpChain.length > 0 ? JSON.stringify(record.jumpChain) : null,
         createdAt,
         updatedAt: now,
       })
@@ -64,6 +68,7 @@ export class Registry {
       authMethod: row.auth_method,
       keyPath: row.key_path ?? undefined,
       hostKeyFingerprint: row.host_key_fingerprint ?? undefined,
+      jumpChain: row.jump_chain ? JSON.parse(row.jump_chain) : undefined,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     }

@@ -5,6 +5,7 @@ import type { Registry } from './registry.js'
 import type { Keychain } from './keychain.js'
 import type { LogStore } from './logstore.js'
 import type { ServerRecord } from '../shared/types.js'
+import { resolveJumpPath } from './jump-chain.js'
 
 interface DashboardOptions {
   registry: Registry
@@ -19,6 +20,7 @@ interface ServerInput {
   username: string
   authMethod: 'password' | 'key'
   keyPath?: string
+  jumpChain?: string[]
   secret: string
   isEdit?: boolean
 }
@@ -31,6 +33,11 @@ function validateServerInput(input: any): string | null {
   if (input.authMethod !== 'password' && input.authMethod !== 'key') return 'authMethod must be password or key'
   if (input.authMethod === 'key' && !input.keyPath) return 'keyPath is required when authMethod is key'
   if (input.authMethod === 'password' && input.keyPath) return 'keyPath must not be set when authMethod is password'
+  if (input.jumpChain !== undefined) {
+    if (!Array.isArray(input.jumpChain) || !input.jumpChain.every((id: unknown) => typeof id === 'string' && id.length > 0)) {
+      return 'jumpChain must be an array of server ids'
+    }
+  }
   // Editing an existing server may omit the secret to keep the one already stored in Keychain.
   if (!input.secret && !input.isEdit) return 'missing secret'
   return null
@@ -59,9 +66,17 @@ export function createDashboardApp(opts: DashboardOptions): { app: express.Expre
       return res.status(404).json({ error: `no server with id "${input.id}" exists to edit` })
     }
 
+    if (input.jumpChain && input.jumpChain.length > 0) {
+      try {
+        resolveJumpPath(input.id, input.jumpChain, (id) => opts.registry.get(id))
+      } catch (err: any) {
+        return res.status(400).json({ error: err?.message ?? String(err) })
+      }
+    }
+
     const record = opts.registry.upsert({
       id: input.id, host: input.host, port: input.port, username: input.username,
-      authMethod: input.authMethod, keyPath: input.keyPath,
+      authMethod: input.authMethod, keyPath: input.keyPath, jumpChain: input.jumpChain,
     })
     let priorSecret: string | undefined
     try {
@@ -73,7 +88,7 @@ export function createDashboardApp(opts: DashboardOptions): { app: express.Expre
       if (existing) {
         opts.registry.upsert({
           id: existing.id, host: existing.host, port: existing.port, username: existing.username,
-          authMethod: existing.authMethod, keyPath: existing.keyPath,
+          authMethod: existing.authMethod, keyPath: existing.keyPath, jumpChain: existing.jumpChain,
         })
         if (priorSecret !== undefined) opts.keychain.setSecret(existing.id, priorSecret)
       } else {
