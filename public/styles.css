@@ -23,7 +23,7 @@
   --radius-sm: 4px;
   --radius: 6px;
   --font-ui: 'Hanken Grotesk', -apple-system, BlinkMacSystemFont, sans-serif;
-  --font-mono: 'Fragment Mono', ui-monospace, 'SF Mono', monospace;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', monospace;
 
   --ease: cubic-bezier(0.2, 0.6, 0.2, 1);
 }
@@ -88,8 +88,10 @@ button, input, select, textarea {
   display: flex; align-items: center; gap: 10px;
 }
 .brand .mark {
-  width: 16px; height: 16px; border-radius: 3px;
-  background: var(--accent);
+  width: 20px; height: 20px; border-radius: 4px;
+  background: var(--accent); color: var(--accent-text);
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--font-mono); font-size: 10px; font-weight: 600; letter-spacing: -0.05em;
 }
 .brand-sub {
   font-weight: 500; font-size: 12px; color: var(--text-dim);
@@ -121,6 +123,12 @@ button, input, select, textarea {
   font-family: var(--font-mono); font-size: 11px; background: var(--bg-sunken);
   border: 1px solid var(--border-strong); border-radius: 3px; padding: 1px 5px;
 }
+.kbtn span { white-space: nowrap; }
+
+.mobile-nav {
+  display: none;
+  border-bottom: 1px solid var(--border); background: var(--bg); position: relative; z-index: 1;
+}
 
 /* ---------- layout ---------- */
 .body { display: grid; grid-template-columns: 232px 1fr; min-height: calc(100vh - 57px); position: relative; z-index: 1; }
@@ -146,10 +154,11 @@ button, input, select, textarea {
 .srv-row {
   display: flex; align-items: center; gap: 9px; padding: 8px 8px; border-radius: var(--radius);
   font-size: 13px; font-weight: 500; font-family: var(--font-mono); cursor: pointer; color: var(--text);
-  transition: background 100ms var(--ease);
+  transition: background 100ms var(--ease); min-width: 0;
 }
 .srv-row:hover { background: var(--bg-hover); }
 .srv-row.no-match { display: none; }
+.srv-row-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; background: var(--text-dim); }
 .dot.run { background: var(--green); box-shadow: 0 0 0 3px var(--green-dim); animation: pulse 1.8s var(--ease) infinite; }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
@@ -200,7 +209,7 @@ button, input, select, textarea {
 .card .top { display: flex; justify-content: space-between; align-items: center; font-size: 13.5px; gap: 12px; }
 .card .id { font-family: var(--font-mono); font-weight: 600; letter-spacing: -0.01em; }
 .card .agent { color: var(--text-dim); font-size: 12px; margin-top: 6px; font-family: var(--font-mono); }
-.card .meta-row { display: flex; align-items: center; gap: 8px; color: var(--text-dim); font-size: 11.5px; margin-top: 4px; }
+.card .meta-row { display: flex; align-items: center; gap: 8px; color: var(--text-dim); font-size: 11.5px; margin-top: 4px; font-family: var(--font-mono); }
 .card .meta-row .sep { opacity: 0.5; }
 
 .status { font-size: 11.5px; font-weight: 600; font-family: var(--font-mono); display: flex; align-items: center; gap: 6px; white-space: nowrap; }
@@ -224,10 +233,11 @@ button, input, select, textarea {
 }
 .term-actions button:hover { color: var(--text); border-color: var(--text-dim); }
 .jump-latest {
-  position: sticky; bottom: 6px; margin: 0 auto; display: block; font-size: 11px;
+  position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%); font-size: 11px;
   background: var(--accent); color: var(--accent-text); border: none; border-radius: 20px;
-  padding: 4px 12px; font-weight: 600; cursor: pointer;
+  padding: 4px 12px; font-weight: 600; cursor: pointer; box-shadow: 0 4px 12px rgba(0,0,0,0.4);
 }
+.jump-latest:not([hidden]) { display: block; }
 
 .empty {
   border: 1px dashed var(--border-strong); border-radius: var(--radius); padding: 28px 24px;
@@ -244,14 +254,18 @@ button, input, select, textarea {
 
 /* ---------- server rows (servers view) ---------- */
 .server-row {
-  display: flex; justify-content: space-between; align-items: center;
+  display: flex; justify-content: space-between; align-items: center; gap: 12px;
   background: var(--bg-raised); border: 1px solid var(--border); border-radius: var(--radius);
   padding: 13px 16px;
 }
-.server-row .meta { font-size: 13px; }
-.server-row .meta .id { font-family: var(--font-mono); font-weight: 600; }
-.server-row .meta .detail { color: var(--text-dim); font-size: 12px; margin-top: 3px; font-family: var(--font-mono); }
-.server-row .actions { display: flex; gap: 8px; }
+.server-row .meta { font-size: 13px; min-width: 0; flex: 1; }
+.server-row .meta .id { font-family: var(--font-mono); font-weight: 600; overflow-wrap: anywhere; }
+.server-row .meta .detail { color: var(--text-dim); font-size: 12px; margin-top: 3px; font-family: var(--font-mono); overflow-wrap: anywhere; }
+.server-row .actions { display: flex; gap: 8px; flex-shrink: 0; }
+@media (max-width: 560px) {
+  .server-row { flex-wrap: wrap; }
+  .server-row .meta { flex-basis: 100%; }
+}
 
 /* ---------- buttons ---------- */
 .btn {
@@ -295,7 +309,7 @@ button, input, select, textarea {
 
 /* ---------- slide-over ---------- */
 .scrim {
-  position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 40;
+  position: fixed; inset: 0; background: rgba(0,0,0,0.72); backdrop-filter: blur(1.5px); z-index: 40;
   animation: fade-in 150ms var(--ease);
 }
 @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
@@ -361,4 +375,19 @@ button, input, select, textarea {
   .body { grid-template-columns: 1fr; }
   .sidebar { display: none; }
   .main { padding: 20px; }
+  .mobile-nav { display: flex; }
+  .mobile-nav .nav-item {
+    flex: 1; justify-content: center; text-align: center; border-radius: 0;
+    padding: 12px 8px; font-size: 13px; border-bottom: 2px solid transparent;
+  }
+  .mobile-nav .nav-item.active { background: none; border-bottom-color: var(--accent); color: var(--text-bright); }
+}
+
+@media (max-width: 480px) {
+  .topbar { gap: 10px; padding: 14px 16px; }
+  .brand-sub { display: none; }
+  .conn-label { display: none; }
+  .kbtn span { display: none; }
+  .kbtn { padding: 7px 8px; }
+  .slideover { width: 100vw; }
 }

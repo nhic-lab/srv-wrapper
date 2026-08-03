@@ -34,7 +34,7 @@ interface SocketServerOptions {
   registry: Registry
   logStore: LogStore
   sshManager: SshManager
-  onBroadcast?: (event: DaemonEvent & { requestId: string; serverId?: string; agentLabel?: string }) => void
+  onBroadcast?: (event: DaemonEvent & { requestId: string; serverId?: string; agentLabel?: string; command?: string }) => void
 }
 
 export class SocketServer {
@@ -104,7 +104,7 @@ export class SocketServer {
           this.opts.logStore.appendOutput(runId, chunk)
           const event: DaemonEvent & { requestId: string } = { type: 'stream', requestId, stream, chunk }
           this.send(conn, event)
-          this.opts.onBroadcast?.({ ...event, serverId: server.id, agentLabel: msg.agentLabel })
+          this.opts.onBroadcast?.({ ...event, serverId: server.id, agentLabel: msg.agentLabel, command: msg.command })
         })
         this.opts.logStore.finish(runId, exitCode)
         const done: DaemonEvent & { requestId: string } = { type: 'done', requestId, exitCode }

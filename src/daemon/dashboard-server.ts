@@ -20,6 +20,7 @@ interface ServerInput {
   authMethod: 'password' | 'key'
   keyPath?: string
   secret: string
+  isEdit?: boolean
 }
 
 function validateServerInput(input: any): string | null {
@@ -30,7 +31,8 @@ function validateServerInput(input: any): string | null {
   if (input.authMethod !== 'password' && input.authMethod !== 'key') return 'authMethod must be password or key'
   if (input.authMethod === 'key' && !input.keyPath) return 'keyPath is required when authMethod is key'
   if (input.authMethod === 'password' && input.keyPath) return 'keyPath must not be set when authMethod is password'
-  if (!input.secret) return 'missing secret'
+  // Editing an existing server may omit the secret to keep the one already stored in Keychain.
+  if (!input.secret && !input.isEdit) return 'missing secret'
   return null
 }
 
@@ -50,6 +52,13 @@ export function createDashboardApp(opts: DashboardOptions): { app: express.Expre
     if (error) return res.status(400).json({ error })
 
     const existing = opts.registry.get(input.id)
+    if (existing && !input.isEdit) {
+      return res.status(409).json({ error: `a server with id "${input.id}" already exists` })
+    }
+    if (!existing && input.isEdit) {
+      return res.status(404).json({ error: `no server with id "${input.id}" exists to edit` })
+    }
+
     const record = opts.registry.upsert({
       id: input.id, host: input.host, port: input.port, username: input.username,
       authMethod: input.authMethod, keyPath: input.keyPath,
@@ -57,7 +66,9 @@ export function createDashboardApp(opts: DashboardOptions): { app: express.Expre
     let priorSecret: string | undefined
     try {
       priorSecret = existing ? opts.keychain.getSecret(input.id) : undefined
-      opts.keychain.setSecret(input.id, input.secret)
+      const secretToStore = input.secret || priorSecret
+      if (!secretToStore) throw new Error('missing secret')
+      opts.keychain.setSecret(input.id, secretToStore)
     } catch (err: any) {
       if (existing) {
         opts.registry.upsert({

@@ -15,9 +15,21 @@ function escapeHtml(str) {
   return String(str).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 }
 
+function pad2(n) {
+  return String(n).padStart(2, '0')
+}
+
 function formatTimestamp(ms) {
   if (!ms) return 'n/a'
-  return new Date(ms).toLocaleString()
+  const d = new Date(ms)
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`
+}
+
+function formatElapsed(startedAt) {
+  const seconds = Math.max(0, Math.round((Date.now() - startedAt) / 1000))
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.floor(seconds / 60)
+  return `${minutes}m ${seconds % 60}s`
 }
 
 function formatDuration(startedAt, endedAt) {
@@ -42,6 +54,30 @@ function showToast(message, kind = 'default') {
 
 function isTypingTarget(el) {
   return el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable)
+}
+
+const FOCUSABLE_SELECTOR = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+
+function trapFocus(container, e) {
+  if (e.key !== 'Tab') return
+  const focusable = [...container.querySelectorAll(FOCUSABLE_SELECTOR)].filter((el) => el.offsetParent !== null)
+  if (!focusable.length) return
+  const first = focusable[0]
+  const last = focusable[focusable.length - 1]
+  if (e.shiftKey && document.activeElement === first) {
+    e.preventDefault()
+    last.focus()
+  } else if (!e.shiftKey && document.activeElement === last) {
+    e.preventDefault()
+    first.focus()
+  }
+}
+
+function activeOverlayContainer() {
+  if (!document.getElementById('palette').hidden) return document.getElementById('palette')
+  if (!document.getElementById('server-slideover').hidden) return document.getElementById('server-slideover')
+  if (!document.getElementById('confirm-dialog').hidden) return document.getElementById('confirm-dialog')
+  return null
 }
 
 // ---------- servers: load + sidebar ----------
@@ -86,16 +122,23 @@ function renderServerList() {
   }
 
   document.querySelectorAll('.srv-row').forEach((row) => {
-    row.addEventListener('click', () => {
+    const activate = () => {
       switchView('live')
       row.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+    }
+    row.addEventListener('click', activate)
+    row.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault()
+        activate()
+      }
     })
   })
 }
 
 function srvRowHtml(s, isActive, hidden = false) {
-  return `<div class="srv-row${hidden ? ' no-match' : ''}" data-id="${escapeHtml(s.id)}">
-    <span class="dot${isActive ? ' run' : ''}"></span> ${escapeHtml(s.id)}
+  return `<div class="srv-row${hidden ? ' no-match' : ''}" data-id="${escapeHtml(s.id)}" role="button" tabindex="0" title="${escapeHtml(s.id)}">
+    <span class="dot${isActive ? ' run' : ''}"></span><span class="srv-row-label">${escapeHtml(s.id)}</span>
   </div>`
 }
 
@@ -141,12 +184,14 @@ function openServerForm(id = null) {
     form.elements.port.value = server.port
     form.elements.username.value = server.username
     form.elements.authMethod.value = server.authMethod
-    form.elements.secret.placeholder = 're-enter password or key passphrase to update'
+    form.elements.secret.placeholder = 'leave blank to keep the current password or key passphrase'
+    form.elements.secret.required = false
     document.getElementById('server-form-title').textContent = `Edit ${server.id}`
     document.getElementById('server-form-submit').textContent = 'Save changes'
   } else {
     form.elements.id.disabled = false
     form.elements.secret.placeholder = 'password or key passphrase'
+    form.elements.secret.required = true
     document.getElementById('server-form-title').textContent = 'Register a server'
     document.getElementById('server-form-submit').textContent = 'Add server'
   }
@@ -188,6 +233,7 @@ function setupServerForm() {
     if (wasDisabled) formEl.elements.id.disabled = true
     const payload = Object.fromEntries(form.entries())
     payload.port = Number(payload.port)
+    payload.isEdit = Boolean(state.editingServerId)
 
     let res
     try {
@@ -213,6 +259,61 @@ function setupServerForm() {
       }
       showServerFormError(message)
     }
+  })
+}
+
+// ---------- bulk import ----------
+
+function setupBulkImport() {
+  document.getElementById('bulk-submit').addEventListener('click', async () => {
+    const textarea = document.getElementById('bulk-json')
+    const raw = textarea.value
+    textarea.classList.remove('invalid')
+    let servers
+    try {
+      servers = JSON.parse(raw)
+    } catch (err) {
+      textarea.classList.add('invalid')
+      showToast(`Invalid JSON: ${err.message}`, 'error')
+      return
+    }
+    if (!Array.isArray(servers)) {
+      textarea.classList.add('invalid')
+      showToast('Expected a JSON array of server objects.', 'error')
+      return
+    }
+
+    let res
+    try {
+      res = await fetch('/api/servers/bulk', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ servers }),
+      })
+    } catch (err) {
+      showToast(`Bulk import request failed: ${err.message}`, 'error')
+      return
+    }
+
+    let result
+    try {
+      result = await res.json()
+    } catch {
+      showToast(`Bulk import failed (${res.status}).`, 'error')
+      return
+    }
+
+    if (!res.ok) {
+      showToast(result.error ?? `Bulk import failed (${res.status}).`, 'error')
+      return
+    }
+
+    if (result.failed.length) {
+      showToast(`${result.succeeded.length} added, ${result.failed.length} failed: ` +
+        result.failed.map((f) => `${f.id ?? '?'} (${f.error})`).join(', '), 'error')
+    } else {
+      showToast(`${result.succeeded.length} server(s) imported.`, 'success')
+      textarea.value = ''
+    }
+    await loadServers()
   })
 }
 
@@ -273,16 +374,29 @@ function createLiveCard(requestId, run) {
       <span class="id">${escapeHtml(run.serverId)}</span>
       <span class="status status-run">running</span>
     </div>
-    <div class="agent">agent: ${escapeHtml(run.agentLabel)}</div>
-    <div class="term"><div class="term-body"></div></div>
+    <div class="agent">agent: ${escapeHtml(run.agentLabel)}${run.command ? ` · ${escapeHtml(run.command)}` : ''}</div>
+    <div class="meta-row"><span class="elapsed" data-started="${run.startedAt}">0s</span></div>
+    <div class="term">
+      <div class="term-body"></div>
+      <button type="button" class="jump-latest" hidden>New output ↓</button>
+    </div>
   `
   const body = root.querySelector('.term-body')
+  const jumpBtn = root.querySelector('.jump-latest')
   body.textContent = run.output
   body.addEventListener('scroll', () => {
     const entry = liveCards.get(requestId)
-    if (entry) entry.stickToBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 24
+    if (!entry) return
+    entry.stickToBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 24
+    if (entry.stickToBottom) jumpBtn.hidden = true
   })
-  const entry = { root, body, stickToBottom: true }
+  jumpBtn.addEventListener('click', () => {
+    body.scrollTop = body.scrollHeight
+    jumpBtn.hidden = true
+    const entry = liveCards.get(requestId)
+    if (entry) entry.stickToBottom = true
+  })
+  const entry = { root, body, jumpBtn, stickToBottom: true }
   liveCards.set(requestId, entry)
   document.getElementById('live-feed').appendChild(root)
   body.scrollTop = body.scrollHeight
@@ -294,6 +408,7 @@ function appendLiveChunk(requestId, run, chunk) {
   if (!entry) entry = createLiveCard(requestId, run)
   entry.body.textContent += chunk
   if (entry.stickToBottom) entry.body.scrollTop = entry.body.scrollHeight
+  else entry.jumpBtn.hidden = false
 }
 
 function removeLiveCard(requestId) {
@@ -307,6 +422,7 @@ function renderLiveFeed() {
   if (state.activeRuns.size === 0) {
     liveCards.clear()
     feed.innerHTML = liveEmptyHtml()
+    renderLiveSummary()
     return
   }
   if (feed.querySelector('.empty')) feed.innerHTML = ''
@@ -429,6 +545,8 @@ function setupKeyboardShortcuts() {
       else if (!document.getElementById('confirm-dialog').hidden) closeConfirm()
       return
     }
+    const overlay = activeOverlayContainer()
+    if (overlay) { trapFocus(overlay, e); return }
     if (isTypingTarget(document.activeElement)) return
     if (e.key === '1') switchView('live')
     else if (e.key === '2') switchView('history')
@@ -549,7 +667,7 @@ function connectLiveSocket() {
     const msg = JSON.parse(event.data)
     if (msg.type === 'stream') {
       const existing = state.activeRuns.get(msg.requestId)
-      const run = existing ?? { serverId: msg.serverId, agentLabel: msg.agentLabel, output: '' }
+      const run = existing ?? { serverId: msg.serverId, agentLabel: msg.agentLabel, command: msg.command, output: '', startedAt: Date.now() }
       run.output += msg.chunk
       state.activeRuns.set(msg.requestId, run)
       renderLiveFeed()
@@ -564,12 +682,20 @@ function connectLiveSocket() {
   }
 }
 
+function tickElapsedTimers() {
+  document.querySelectorAll('.elapsed').forEach((el) => {
+    el.textContent = formatElapsed(Number(el.dataset.started))
+  })
+}
+setInterval(tickElapsedTimers, 1000)
+
 // ---------- boot ----------
 
 document.getElementById('live-feed').innerHTML = liveEmptyHtml()
 loadServers()
 setupNav()
 setupServerForm()
+setupBulkImport()
 setupConfirmDialog()
 setupPalette()
 setupSearch()

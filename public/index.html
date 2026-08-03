@@ -6,7 +6,7 @@
   <title>srv — ops console</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=Fragment+Mono&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
@@ -14,7 +14,7 @@
     <div class="grain" aria-hidden="true"></div>
 
     <header class="topbar">
-      <div class="brand"><span class="mark"></span> srv <span class="brand-sub">ops console</span></div>
+      <div class="brand"><span class="mark">&gt;_</span> srv <span class="brand-sub">ops console</span></div>
       <div class="conn" id="conn-status" data-state="connecting">
         <span class="conn-dot"></span>
         <span class="conn-label">connecting…</span>
@@ -23,6 +23,12 @@
         <span>Jump to…</span><kbd>⌘K</kbd>
       </button>
     </header>
+
+    <nav class="mobile-nav" aria-label="Views">
+      <button type="button" class="nav-item active" data-view="live">Live</button>
+      <button type="button" class="nav-item" data-view="history">History</button>
+      <button type="button" class="nav-item" data-view="servers">Servers</button>
+    </nav>
 
     <div class="body">
       <aside class="sidebar">

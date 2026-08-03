@@ -86,6 +86,48 @@ describe('dashboard-server', () => {
     expect(res.body[0].id).toBe('srv-a1')
   })
 
+  it('POST /api/servers rejects registering a duplicate id (isEdit not set) instead of silently overwriting it', async () => {
+    const { app } = createDashboardApp({ registry, keychain, logStore })
+    await request(app)
+      .post('/api/servers')
+      .send({ id: 'srv-dup', host: 'original-host', port: 22, username: 'orig-user', authMethod: 'password', secret: 'orig-secret' })
+
+    const res = await request(app)
+      .post('/api/servers')
+      .send({ id: 'srv-dup', host: 'attacker-host', port: 2222, username: 'other-user', authMethod: 'password', secret: 'other-secret' })
+
+    expect(res.status).toBe(409)
+    expect(res.body.error).toMatch(/already exists/)
+    const record = registry.get('srv-dup')
+    expect(record!.host).toBe('original-host')
+    expect(secretsSet['srv-dup']).toBe('orig-secret')
+  })
+
+  it('POST /api/servers with isEdit but no matching record returns 404 instead of creating one', async () => {
+    const { app } = createDashboardApp({ registry, keychain, logStore })
+    const res = await request(app)
+      .post('/api/servers')
+      .send({ id: 'srv-ghost', host: 'h', port: 22, username: 'u', authMethod: 'password', secret: 's', isEdit: true })
+
+    expect(res.status).toBe(404)
+    expect(registry.get('srv-ghost')).toBeUndefined()
+  })
+
+  it('POST /api/servers with isEdit and a blank secret keeps the previously stored secret', async () => {
+    const { app } = createDashboardApp({ registry, keychain, logStore })
+    await request(app)
+      .post('/api/servers')
+      .send({ id: 'srv-keepsecret', host: 'original-host', port: 22, username: 'orig-user', authMethod: 'password', secret: 'orig-secret' })
+
+    const res = await request(app)
+      .post('/api/servers')
+      .send({ id: 'srv-keepsecret', host: 'updated-host', port: 22, username: 'orig-user', authMethod: 'password', secret: '', isEdit: true })
+
+    expect(res.status).toBe(201)
+    expect(registry.get('srv-keepsecret')!.host).toBe('updated-host')
+    expect(secretsSet['srv-keepsecret']).toBe('orig-secret')
+  })
+
   it('POST /api/servers/bulk commits all-or-nothing on validation failure', async () => {
     const { app } = createDashboardApp({ registry, keychain, logStore })
     const res = await request(app)
@@ -140,7 +182,7 @@ describe('dashboard-server', () => {
     const { app: failApp } = createDashboardApp({ registry, keychain: failingKeychain, logStore })
     const res = await request(failApp)
       .post('/api/servers')
-      .send({ id: 'srv-edit', host: 'new-host', port: 2222, username: 'new-user', authMethod: 'password', secret: 'new-secret' })
+      .send({ id: 'srv-edit', host: 'new-host', port: 2222, username: 'new-user', authMethod: 'password', secret: 'new-secret', isEdit: true })
 
     expect(res.status).toBe(500)
     const restored = registry.get('srv-edit')
@@ -170,7 +212,7 @@ describe('dashboard-server', () => {
 
     const res = await request(failApp)
       .post('/api/servers')
-      .send({ id: 'srv-getfail', host: 'new-host', port: 2222, username: 'new-user', authMethod: 'password', secret: 'new-secret' })
+      .send({ id: 'srv-getfail', host: 'new-host', port: 2222, username: 'new-user', authMethod: 'password', secret: 'new-secret', isEdit: true })
 
     expect(res.status).toBe(500)
     expect(res.body.error).toBeDefined()
