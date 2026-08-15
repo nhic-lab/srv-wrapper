@@ -406,3 +406,133 @@ describe('dashboard-server', () => {
     await new Promise<void>((resolve) => server.close(() => resolve()))
   })
 })
+
+describe('dashboard-server connection testing', () => {
+  function fakeSshManager(behavior: (server: any, secret?: string) => void | Promise<void>) {
+    return { testConnect: async (server: any, secret?: string) => behavior(server, secret) } as any
+  }
+
+  it('POST /api/servers/:id/test returns ok:true when testConnect resolves', async () => {
+    const sshManager = fakeSshManager(() => {})
+    const { app } = createDashboardApp({ registry, keychain, logStore, sshManager })
+    await request(app).post('/api/servers').send({ id: 'srv-a1', host: 'h', port: 22, username: 'u', authMethod: 'password', secret: 's' })
+
+    const res = await request(app).post('/api/servers/srv-a1/test')
+    expect(res.status).toBe(200)
+    expect(res.body).toEqual({ ok: true })
+  })
+
+  it('POST /api/servers/:id/test returns a sanitized ok:false error when testConnect rejects', async () => {
+    const leaky: any = new Error('connect ECONNREFUSED 10.0.0.5:22')
+    leaky.code = 'ECONNREFUSED'
+    const sshManager = fakeSshManager(() => { throw leaky })
+    const { app } = createDashboardApp({ registry, keychain, logStore, sshManager })
+    await request(app).post('/api/servers').send({ id: 'srv-a1', host: 'h', port: 22, username: 'u', authMethod: 'password', secret: 's' })
+
+    const res = await request(app).post('/api/servers/srv-a1/test')
+    expect(res.status).toBe(200)
+    expect(res.body.ok).toBe(false)
+    expect(res.body.error).not.toContain('10.0.0.5')
+    expect(res.body.error).toMatch(/connection refused/i)
+  })
+
+  it('POST /api/servers/:id/test 404s for an unregistered id', async () => {
+    const { app } = createDashboardApp({ registry, keychain, logStore, sshManager: fakeSshManager(() => {}) })
+    const res = await request(app).post('/api/servers/nope/test')
+    expect(res.status).toBe(404)
+  })
+
+  it('POST /api/servers/:id/test 501s when sshManager was not configured', async () => {
+    const { app } = createDashboardApp({ registry, keychain, logStore })
+    await request(app).post('/api/servers').send({ id: 'srv-a1', host: 'h', port: 22, username: 'u', authMethod: 'password', secret: 's' })
+    const res = await request(app).post('/api/servers/srv-a1/test')
+    expect(res.status).toBe(501)
+  })
+
+  it('POST /api/servers/test validates and tests an unsaved server, without persisting it', async () => {
+    let received: any = null
+    const sshManager = fakeSshManager((server, secret) => { received = { server, secret } })
+    const { app } = createDashboardApp({ registry, keychain, logStore, sshManager })
+
+    const res = await request(app)
+      .post('/api/servers/test')
+      .send({ id: 'srv-new', host: 'h', port: 22, username: 'u', authMethod: 'password', secret: 'typed-secret' })
+
+    expect(res.status).toBe(200)
+    expect(res.body).toEqual({ ok: true })
+    expect(received.secret).toBe('typed-secret')
+    expect(registry.get('srv-new')).toBeUndefined()
+  })
+
+  it('POST /api/servers/test reuses the stored Keychain secret when editing an existing server without retyping it', async () => {
+    let received: any = null
+    const sshManager = fakeSshManager((server, secret) => { received = { server, secret } })
+    const { app } = createDashboardApp({ registry, keychain, logStore, sshManager })
+    await request(app).post('/api/servers').send({ id: 'srv-a1', host: 'h', port: 22, username: 'u', authMethod: 'password', secret: 'orig-secret' })
+
+    const res = await request(app)
+      .post('/api/servers/test')
+      .send({ id: 'srv-a1', host: 'new-host', port: 22, username: 'u', authMethod: 'password' })
+
+    expect(res.status).toBe(200)
+    expect(received.secret).toBe('orig-secret')
+    expect(received.server.host).toBe('new-host')
+  })
+
+  it('POST /api/servers/test responds with a 400 JSON error, not an uncaught throw, when no secret was provided and none is in Keychain for that id', async () => {
+    registry.upsert({ id: 'srv-no-secret', host: 'h', port: 22, username: 'u', authMethod: 'password' })
+    const { app } = createDashboardApp({ registry, keychain, logStore, sshManager: fakeSshManager(() => {}) })
+
+    const res = await request(app)
+      .post('/api/servers/test')
+      .send({ id: 'srv-no-secret', host: 'h', port: 22, username: 'u', authMethod: 'password' })
+
+    expect(res.status).toBe(400)
+    expect(res.body.error).toMatch(/secret/i)
+  })
+
+  it('POST /api/servers/test rejects invalid input the same way registration does', async () => {
+    const { app } = createDashboardApp({ registry, keychain, logStore, sshManager: fakeSshManager(() => {}) })
+    const res = await request(app).post('/api/servers/test').send({ id: 'srv-new', host: 'h', port: 99999, username: 'u', authMethod: 'password', secret: 's' })
+    expect(res.status).toBe(400)
+  })
+
+  it('POST /api/servers/test-all responds immediately with the server count and broadcasts a result per server over the WebSocket', async () => {
+    registry.upsert({ id: 'srv-online', host: 'h1', port: 22, username: 'u', authMethod: 'password' })
+    registry.upsert({ id: 'srv-offline', host: 'h2', port: 22, username: 'u', authMethod: 'password' })
+    const leaky: any = new Error('connect ECONNREFUSED')
+    leaky.code = 'ECONNREFUSED'
+    const sshManager = fakeSshManager((server) => {
+      if (server.id === 'srv-offline') throw leaky
+    })
+    const { app } = createDashboardApp({ registry, keychain, logStore, sshManager })
+    const httpServer = http.createServer(app)
+    ;(app as any).attachWebSocket(httpServer)
+    await new Promise<void>((resolve) => httpServer.listen(0, '127.0.0.1', resolve))
+    const addr = httpServer.address()
+    const port = typeof addr === 'object' && addr ? addr.port : 0
+
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/api/live`, { headers: { Origin: 'http://127.0.0.1:4280' } })
+    const results: any[] = []
+    const gotBoth = new Promise<void>((resolve) => {
+      ws.on('message', (data) => {
+        results.push(JSON.parse(data.toString()))
+        if (results.length === 2) resolve()
+      })
+    })
+    await new Promise<void>((resolve) => ws.on('open', () => resolve()))
+
+    const res = await request(app).post('/api/servers/test-all')
+    expect(res.status).toBe(202)
+    expect(res.body.count).toBe(2)
+
+    await gotBoth
+    const byId = Object.fromEntries(results.map((r) => [r.id, r]))
+    expect(byId['srv-online'].ok).toBe(true)
+    expect(byId['srv-offline'].ok).toBe(false)
+    expect(byId['srv-offline'].error).toMatch(/connection refused/i)
+
+    ws.close()
+    await new Promise<void>((resolve) => httpServer.close(() => resolve()))
+  })
+})

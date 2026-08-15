@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { execCommand, sessionStart, sessionSend, sessionStop } from '../../src/cli/client.js'
+import { execCommand, sessionStart, sessionSend, sessionStop, listServers } from '../../src/cli/client.js'
 import net from 'node:net'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -60,6 +60,17 @@ describe('execCommand', () => {
     await expect(
       execCommand({ socketPath, serverId: 'nope', agentLabel: 'a', command: 'x', onStream: () => {} })
     ).rejects.toThrow(/unknown server/)
+  })
+})
+
+describe('listServers', () => {
+  it('resolves with the serverIds from list_result', async () => {
+    await startFakeDaemon((msg, write) => {
+      expect(msg.type).toBe('list')
+      write({ type: 'list_result', requestId: msg.requestId, serverIds: ['srv-a1', 'srv-b2'] })
+    })
+    const serverIds = await listServers({ socketPath })
+    expect(serverIds).toEqual(['srv-a1', 'srv-b2'])
   })
 })
 

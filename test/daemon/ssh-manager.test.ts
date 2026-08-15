@@ -60,7 +60,7 @@ describe('SshManager', () => {
     const exitCode = await mgr.exec(server, 'ls -la', (_s, chunk) => chunks.push(chunk))
 
     expect(resolver).toHaveBeenCalledWith('srv-a1')
-    expect(connectFn).toHaveBeenCalledWith(server, 'hunter2', expect.any(Object))
+    expect(connectFn).toHaveBeenCalledWith(server, 'hunter2', expect.any(Object), undefined, undefined)
     expect(chunks).toEqual(['hello\n'])
     expect(exitCode).toBe(0)
     expect(fakeClient.end).toHaveBeenCalled()
@@ -163,6 +163,41 @@ describe('SshManager', () => {
     expect(capturedHostKeyStore).toBeDefined()
     expect(typeof capturedHostKeyStore.get).toBe('function')
     expect(typeof capturedHostKeyStore.set).toBe('function')
+  })
+})
+
+describe('SshManager.testConnect', () => {
+  it('resolves the secret via the resolver, connects, and immediately closes the client', async () => {
+    const fakeClient = { end: vi.fn() }
+    const connectFn = vi.fn().mockResolvedValue(fakeClient)
+    const resolver = vi.fn().mockReturnValue('hunter2')
+    const mgr = new SshManager(resolver, connectFn as any)
+
+    await mgr.testConnect(server)
+
+    expect(resolver).toHaveBeenCalledWith('srv-a1')
+    expect(connectFn).toHaveBeenCalledWith(server, 'hunter2', expect.any(Object), undefined, 8000)
+    expect(fakeClient.end).toHaveBeenCalled()
+  })
+
+  it('uses secretOverride instead of the resolver when testing an unsaved server', async () => {
+    const fakeClient = { end: vi.fn() }
+    const connectFn = vi.fn().mockResolvedValue(fakeClient)
+    const resolver = vi.fn().mockReturnValue('should-not-be-used')
+    const mgr = new SshManager(resolver, connectFn as any)
+
+    await mgr.testConnect(server, 'typed-in-form-secret')
+
+    expect(resolver).not.toHaveBeenCalled()
+    expect(connectFn).toHaveBeenCalledWith(server, 'typed-in-form-secret', expect.any(Object), undefined, 8000)
+    expect(fakeClient.end).toHaveBeenCalled()
+  })
+
+  it('rejects and closes nothing further when the connection fails', async () => {
+    const connectFn = vi.fn().mockRejectedValue(new Error('connect ECONNREFUSED'))
+    const mgr = new SshManager(() => 'secret', connectFn as any)
+
+    await expect(mgr.testConnect(server)).rejects.toThrow('connect ECONNREFUSED')
   })
 })
 
