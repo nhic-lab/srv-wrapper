@@ -35,7 +35,7 @@ async function main() {
     (serverId) => registry.get(serverId)
   )
 
-  const { app, broadcast } = createDashboardApp({ registry, keychain, logStore })
+  const { app, broadcast } = createDashboardApp({ registry, keychain, logStore, sshManager })
   const httpServer = http.createServer(app)
   ;(app as any).attachWebSocket(httpServer)
   httpServer.listen(DASHBOARD_PORT, '127.0.0.1', () => {

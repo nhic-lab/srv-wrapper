@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { Command } from 'commander'
-import { execCommand, sessionStart, sessionSend, sessionStop } from './client.js'
+import { execCommand, sessionStart, sessionSend, sessionStop, listServers } from './client.js'
 import { srvSocketPath } from '../shared/paths.js'
 
 const program = new Command()
@@ -24,6 +24,19 @@ program
         },
       })
       process.exit(exitCode)
+    } catch (err: any) {
+      process.stderr.write(`srv: ${err.message}\n`)
+      process.exit(1)
+    }
+  })
+
+program
+  .command('list')
+  .description('List all registered server ids')
+  .action(async () => {
+    try {
+      const serverIds = await listServers({ socketPath: srvSocketPath() })
+      for (const id of serverIds) process.stdout.write(id + '\n')
     } catch (err: any) {
       process.stderr.write(`srv: ${err.message}\n`)
       process.exit(1)

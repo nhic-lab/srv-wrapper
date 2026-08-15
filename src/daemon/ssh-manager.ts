@@ -47,7 +47,8 @@ export type ConnectFn = (
   server: ServerRecord,
   secret: string,
   hostKeyStore?: HostKeyStore,
-  viaStream?: any
+  viaStream?: any,
+  readyTimeoutMs?: number
 ) => Promise<any>
 
 /**
@@ -70,7 +71,7 @@ function readPrivateKeyFile(keyPath: string): string {
   return fs.readFileSync(resolved, 'utf-8')
 }
 
-function defaultConnect(server: ServerRecord, secret: string, hostKeyStore?: HostKeyStore, viaStream?: any): Promise<any> {
+function defaultConnect(server: ServerRecord, secret: string, hostKeyStore?: HostKeyStore, viaStream?: any, readyTimeoutMs?: number): Promise<any> {
   return new Promise((resolve, reject) => {
     const client = new Client()
     client.on('ready', () => resolve(client))
@@ -86,6 +87,7 @@ function defaultConnect(server: ServerRecord, secret: string, hostKeyStore?: Hos
     const connectOpts: Record<string, unknown> = viaStream
       ? { sock: viaStream, username: server.username, ...authOpts }
       : { host: server.host, port: server.port, username: server.username, ...authOpts }
+    if (readyTimeoutMs !== undefined) connectOpts.readyTimeout = readyTimeoutMs
     if (hostKeyStore) {
       connectOpts.hostHash = 'sha256'
       connectOpts.hostVerifier = (fingerprint: string) => {
@@ -118,6 +120,8 @@ function closeChainClients(clients: any[]): void {
 }
 
 export class SshManager {
+  private static readonly TEST_CONNECT_TIMEOUT_MS = 8000
+
   private sessions = new Map<string, OpenSession>()
 
   constructor(
@@ -135,10 +139,15 @@ export class SshManager {
    * Connects to `server`, tunneling through its fully-expanded jumpChain (if
    * any) one hop at a time via `client.forwardOut`. Returns every connected
    * Client in hop order, last entry being the connection to `server` itself.
-   * When there's no jumpChain this degenerates to a single direct connect,
-   * calling connectFn with exactly the original 3 positional args.
+   * When there's no jumpChain this degenerates to a single direct connect.
+   *
+   * `targetSecretOverride`, when given, supplies the secret for `server`
+   * itself instead of `secretResolver` — used by testConnect() to test a
+   * not-yet-saved server (whose secret isn't in the Keychain yet). Every
+   * other hop in the chain is still an existing registered server, so its
+   * secret still comes from the resolver as usual.
    */
-  private async connectChain(server: ServerRecord): Promise<any[]> {
+  private async connectChain(server: ServerRecord, targetSecretOverride?: string, readyTimeoutMs?: number): Promise<any[]> {
     const hopIds =
       server.jumpChain && server.jumpChain.length > 0
         ? resolveJumpPath(server.id, server.jumpChain, this.serverLookup)
@@ -150,10 +159,10 @@ export class SshManager {
         const id = hopIds[i]
         const record = id === server.id ? server : this.serverLookup(id)
         if (!record) throw new Error(`jump chain references unknown server id "${id}"`)
-        const secret = this.secretResolver(id)
+        const secret = id === server.id && targetSecretOverride !== undefined ? targetSecretOverride : this.secretResolver(id)
 
         if (i === 0) {
-          clients.push(await this.connectFn(record, secret, this.hostKeyStore))
+          clients.push(await this.connectFn(record, secret, this.hostKeyStore, undefined, readyTimeoutMs))
         } else {
           const previousClient = clients[clients.length - 1]
           const stream = await new Promise<any>((resolve, reject) => {
@@ -162,7 +171,7 @@ export class SshManager {
               resolve(stream)
             })
           })
-          clients.push(await this.connectFn(record, secret, this.hostKeyStore, stream))
+          clients.push(await this.connectFn(record, secret, this.hostKeyStore, stream, readyTimeoutMs))
         }
       }
     } catch (err) {
@@ -172,6 +181,18 @@ export class SshManager {
       throw err
     }
     return clients
+  }
+
+  /**
+   * Opens a connection to `server` (through its jumpChain, if any) and
+   * immediately closes it — used to check reachability/credentials without
+   * running a command. `secretOverride` lets callers test a server that
+   * isn't registered yet (e.g. the dashboard's "test connection" button on
+   * an unsaved form), whose secret isn't in the Keychain.
+   */
+  async testConnect(server: ServerRecord, secretOverride?: string): Promise<void> {
+    const clients = await this.connectChain(server, secretOverride, SshManager.TEST_CONNECT_TIMEOUT_MS)
+    closeChainClients(clients)
   }
 
   async exec(

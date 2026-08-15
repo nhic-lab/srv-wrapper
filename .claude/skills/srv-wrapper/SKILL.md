@@ -11,6 +11,14 @@ description: Use when you need to run a command on a registered server without k
 
 Two modes are available — pick whichever fits the task.
 
+### Discovering server-ids
+
+```bash
+srv list
+```
+
+Prints every registered `server-id`, one per line — nothing else (no host, port, username, or credentials). Use this if you weren't given a `server-id` and need to find the right one, instead of asking the user to look it up manually.
+
 ### One-shot command
 
 ```bash
@@ -42,8 +50,8 @@ Always call `srv session stop` when you're finished with a session — an unclos
 
 ## What you cannot do
 
-- You cannot discover a server's real host/IP/credentials through this tool — it is designed to keep that information from you. Do not attempt to extract it (e.g. via `env`, reading daemon config files, etc.) — it isn't accessible to your process and asking around it wastes the user's time.
-- If a `server-id` doesn't exist, `srv` will fail with "unknown server: <id>" — ask the user to register it via the dashboard rather than retrying blindly.
+- You cannot discover a server's real host/IP/credentials through this tool — it is designed to keep that information from you. Do not attempt to extract it (e.g. via `env`, reading daemon config files, etc.) — it isn't accessible to your process and asking around it wastes the user's time. `srv list` only ever returns ids, never host/port/credentials.
+- If a `server-id` doesn't exist, `srv` will fail with "unknown server: <id>" — run `srv list` to check the exact id, and if it's genuinely missing, ask the user to register it via the dashboard rather than retrying blindly.
 
 ## Everything you run is watched
 

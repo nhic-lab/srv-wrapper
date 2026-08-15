@@ -89,6 +89,27 @@ export function sessionSend(opts: { socketPath: string; sessionId: string; comma
   })
 }
 
+export function listServers(opts: { socketPath: string }): Promise<string[]> {
+  return new Promise((resolve, reject) => {
+    const requestId = randomUUID()
+    const conn = net.createConnection(opts.socketPath)
+    let buffer = ''
+    conn.on('connect', () => {
+      conn.write(encodeMessage({ type: 'list', requestId }))
+    })
+    conn.on('data', (data) => {
+      buffer += data.toString()
+      const { messages, rest } = decodeMessages(buffer)
+      buffer = rest
+      for (const msg of messages as any[]) {
+        if (msg.type === 'list_result') { conn.end(); resolve(msg.serverIds) }
+        else if (msg.type === 'done' && msg.error) { conn.end(); reject(new Error(msg.error)) }
+      }
+    })
+    conn.on('error', reject)
+  })
+}
+
 export function sessionStop(opts: { socketPath: string; sessionId: string }): Promise<void> {
   return new Promise((resolve, reject) => {
     const requestId = randomUUID()

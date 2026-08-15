@@ -75,6 +75,14 @@ describe('SocketServer', () => {
     expect(stats.mode & 0o777).toBe(0o600)
   })
 
+  it('handles a list request by returning registered server ids only, no host/port/username', async () => {
+    registry.upsert({ id: 'srv-b2', host: 'other-host', port: 2222, username: 'root', authMethod: 'password' })
+    const events = await connectAndSend({ type: 'list', requestId: 'req-list-1' }, 'list_result')
+    const result = events.find((e) => e.type === 'list_result')
+    expect(result.serverIds).toEqual(['srv-a1', 'srv-b2'])
+    expect(JSON.stringify(result)).not.toContain('other-host')
+  })
+
   it('handles an exec request end-to-end and streams stdout then done', async () => {
     const events = await connectAndSend({
       type: 'exec', serverId: 'srv-a1', agentLabel: 'test-agent', command: 'echo ok', requestId: 'req-1',

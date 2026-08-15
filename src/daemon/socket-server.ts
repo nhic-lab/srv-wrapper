@@ -22,7 +22,7 @@ const KNOWN_SSH_ERROR_CODES: Record<string, string> = {
  * fall back to a fully generic message otherwise. The real error is logged
  * server-side only.
  */
-function sanitizeSshError(err: any): string {
+export function sanitizeSshError(err: any): string {
   const code = err?.code
   if (code && KNOWN_SSH_ERROR_CODES[code]) return `ssh error: ${KNOWN_SSH_ERROR_CODES[code]}`
   console.error('srvd: unclassified SSH error:', err)
@@ -88,6 +88,12 @@ export class SocketServer {
 
   private async handleMessage(conn: net.Socket, msg: any): Promise<void> {
     const requestId: string = msg.requestId ?? randomUUID()
+
+    if (msg.type === 'list') {
+      const serverIds = this.opts.registry.list().map((s) => s.id)
+      this.send(conn, { type: 'list_result', requestId, serverIds })
+      return
+    }
 
     if (msg.type === 'exec') {
       const server = this.opts.registry.get(msg.serverId)

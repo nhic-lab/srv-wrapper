@@ -4,13 +4,16 @@ import type { Server } from 'node:http'
 import type { Registry } from './registry.js'
 import type { Keychain } from './keychain.js'
 import type { LogStore } from './logstore.js'
+import type { SshManager } from './ssh-manager.js'
 import type { ServerRecord } from '../shared/types.js'
 import { resolveJumpPath } from './jump-chain.js'
+import { sanitizeSshError } from './socket-server.js'
 
 interface DashboardOptions {
   registry: Registry
   keychain: Keychain
   logStore: LogStore
+  sshManager?: SshManager
 }
 
 interface ServerInput {
@@ -154,6 +157,68 @@ export function createDashboardApp(opts: DashboardOptions): { app: express.Expre
 
   app.get('/api/servers', (_req, res) => {
     res.json(opts.registry.list())
+  })
+
+  app.post('/api/servers/:id/test', async (req, res) => {
+    if (!opts.sshManager) return res.status(501).json({ error: 'connection testing is not available' })
+    const server = opts.registry.get(req.params.id)
+    if (!server) return res.status(404).json({ error: `unknown server: ${req.params.id}` })
+    try {
+      await opts.sshManager.testConnect(server)
+      res.json({ ok: true })
+    } catch (err: any) {
+      res.json({ ok: false, error: sanitizeSshError(err) })
+    }
+  })
+
+  app.post('/api/servers/test', async (req, res) => {
+    if (!opts.sshManager) return res.status(501).json({ error: 'connection testing is not available' })
+    const input: ServerInput = req.body
+    const existing = input.id ? opts.registry.get(input.id) : undefined
+    const error = validateServerInput({ ...input, isEdit: Boolean(existing && !input.secret) })
+    if (error) return res.status(400).json({ error })
+
+    if (input.jumpChain && input.jumpChain.length > 0) {
+      try {
+        resolveJumpPath(input.id, input.jumpChain, (id) => opts.registry.get(id))
+      } catch (err: any) {
+        return res.status(400).json({ error: err?.message ?? String(err) })
+      }
+    }
+
+    let secret: string | undefined
+    try {
+      secret = input.secret || (existing ? opts.keychain.getSecret(input.id) : undefined)
+    } catch {
+      // Keychain lookup can throw if the secret was never stored (or was deleted) —
+      // treat that the same as "no secret provided" rather than crashing the request.
+      secret = undefined
+    }
+    if (!secret) return res.status(400).json({ error: 'missing secret' })
+
+    const record: ServerRecord = {
+      id: input.id, host: input.host, port: input.port, username: input.username,
+      authMethod: input.authMethod, keyPath: input.keyPath, jumpChain: input.jumpChain,
+      createdAt: 0, updatedAt: 0,
+    }
+    try {
+      await opts.sshManager.testConnect(record, secret)
+      res.json({ ok: true })
+    } catch (err: any) {
+      res.json({ ok: false, error: sanitizeSshError(err) })
+    }
+  })
+
+  app.post('/api/servers/test-all', (_req, res) => {
+    if (!opts.sshManager) return res.status(501).json({ error: 'connection testing is not available' })
+    const servers = opts.registry.list()
+    res.status(202).json({ count: servers.length })
+    for (const server of servers) {
+      opts.sshManager
+        .testConnect(server)
+        .then(() => broadcast({ type: 'server_test_result', id: server.id, ok: true }))
+        .catch((err: any) => broadcast({ type: 'server_test_result', id: server.id, ok: false, error: sanitizeSshError(err) }))
+    }
   })
 
   app.delete('/api/servers/:id', (req, res) => {

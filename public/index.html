@@ -79,7 +79,10 @@
         <section id="view-servers" class="view" hidden>
           <div class="rowhead">
             <h1>Registered servers</h1>
-            <button type="button" class="btn" id="open-add-server">+ Add server</button>
+            <div class="rowhead-actions">
+              <button type="button" class="btn btn-ghost" id="test-all-servers">Test all</button>
+              <button type="button" class="btn" id="open-add-server">+ Add server</button>
+            </div>
           </div>
           <div id="registered-servers" class="stack"></div>
 
@@ -121,6 +124,10 @@
           <div class="jump-path" id="jump-path-summary"></div>
         </div>
         <div id="server-form-error" class="form-error" hidden></div>
+        <div class="form-test-row">
+          <button type="button" class="btn btn-secondary btn-sm" id="server-form-test">Test connection</button>
+          <span id="server-form-test-result" class="test-result-inline" hidden></span>
+        </div>
         <div class="form-actions">
           <button type="submit" class="btn" id="server-form-submit">Add server</button>
           <button type="button" class="btn btn-ghost" id="server-form-cancel">Cancel</button>

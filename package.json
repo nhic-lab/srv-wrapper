@@ -14,7 +14,9 @@
   "dependencies": {
     "better-sqlite3": "^13.0.2",
     "commander": "^15.0.0",
+    "dotenv": "^8.2.0",
     "express": "^5.2.1",
+    "node-fetch": "^3.3.2",
     "ssh2": "^1.17.0",
     "ws": "^8.21.1"
   },

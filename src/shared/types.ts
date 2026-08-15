@@ -51,11 +51,16 @@ export interface SessionStopRequest {
   sessionId: string
 }
 
+export interface ListRequest {
+  type: 'list'
+}
+
 export type DaemonRequest =
   | ExecRequest
   | SessionStartRequest
   | SessionSendRequest
   | SessionStopRequest
+  | ListRequest
 
 export interface StreamEvent {
   type: 'stream'
@@ -77,4 +82,10 @@ export interface SessionStartedEvent {
   sessionId: string
 }
 
-export type DaemonEvent = StreamEvent | DoneEvent | SessionStartedEvent
+export interface ListResultEvent {
+  type: 'list_result'
+  requestId: string
+  serverIds: string[]
+}
+
+export type DaemonEvent = StreamEvent | DoneEvent | SessionStartedEvent | ListResultEvent

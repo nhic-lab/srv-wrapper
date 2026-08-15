@@ -6,6 +6,7 @@ const state = {
   view: localStorage.getItem('srv.lastView') || 'live',
   editingServerId: null,
   jumpChainDraft: [], // ordered list of server ids picked in the "Via jump hosts" section of the open form
+  testResults: new Map(), // server id -> { state: 'testing' | 'online' | 'offline', error? }
 }
 
 const liveCards = new Map() // requestId -> { root, body, stickToBottom }
@@ -114,6 +115,10 @@ async function loadServers() {
     showToast('Could not reach the daemon to list servers.', 'error')
     state.servers = state.servers.length ? state.servers : []
   }
+  const currentIds = new Set(state.servers.map((s) => s.id))
+  for (const id of [...state.testResults.keys()]) {
+    if (!currentIds.has(id)) state.testResults.delete(id)
+  }
   renderServerList()
   renderRegisteredServers()
 }
@@ -166,31 +171,97 @@ function srvRowHtml(s, isActive, hidden = false) {
   </div>`
 }
 
+function testStatusMeta(id) {
+  const status = state.testResults.get(id)
+  if (!status || status.state === 'unknown') return { state: 'unknown', label: 'Not tested yet — click Test to check.' }
+  if (status.state === 'testing') return { state: 'testing', label: 'Testing…' }
+  if (status.state === 'online') return { state: 'online', label: 'Online — last checked just now' }
+  return { state: 'offline', label: status.error ? `Offline: ${status.error}` : 'Offline' }
+}
+
 function renderRegisteredServers() {
   const el = document.getElementById('registered-servers')
   if (!state.servers.length) {
     el.innerHTML = `<div class="empty">No servers registered yet.<br>Click <strong>+ Add server</strong> above to register your first one.</div>`
     return
   }
-  el.innerHTML = state.servers.map((s) => `
+  el.innerHTML = state.servers.map((s) => {
+    const meta = testStatusMeta(s.id)
+    const testing = meta.state === 'testing'
+    return `
     <div class="server-row" data-id="${escapeHtml(s.id)}">
+      <span class="test-status" data-state="${meta.state}" title="${escapeHtml(meta.label)}"><span class="test-dot"></span></span>
       <div class="meta">
         <div class="id">${escapeHtml(s.id)}</div>
         <div class="detail">${escapeHtml(s.username)}@${escapeHtml(s.host)}:${escapeHtml(s.port)} · ${escapeHtml(s.authMethod)}</div>
         ${s.jumpChain && s.jumpChain.length ? `<div class="detail-jump">via ${s.jumpChain.map(escapeHtml).join(' → ')}</div>` : ''}
       </div>
       <div class="actions">
+        <button type="button" class="btn btn-ghost" data-action="test"${testing ? ' disabled' : ''}>${testing ? 'Testing…' : 'Test'}</button>
         <button type="button" class="btn btn-ghost" data-action="edit">Edit</button>
         <button type="button" class="btn btn-danger" data-action="delete">Delete</button>
       </div>
     </div>
-  `).join('')
+  `
+  }).join('')
 
   el.querySelectorAll('.server-row').forEach((row) => {
     const id = row.dataset.id
+    row.querySelector('[data-action="test"]').addEventListener('click', () => testServer(id))
     row.querySelector('[data-action="edit"]').addEventListener('click', () => openServerForm(id))
     row.querySelector('[data-action="delete"]').addEventListener('click', () => confirmDeleteServer(id))
   })
+}
+
+async function testServer(id) {
+  state.testResults.set(id, { state: 'testing' })
+  renderRegisteredServers()
+  try {
+    const res = await fetch(`/api/servers/${encodeURIComponent(id)}/test`, { method: 'POST' })
+    const body = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(body.error || `request failed (${res.status})`)
+    state.testResults.set(id, body.ok ? { state: 'online' } : { state: 'offline', error: body.error })
+  } catch (err) {
+    state.testResults.set(id, { state: 'offline', error: err.message })
+    showToast(`Could not test ${id}: ${err.message}`, 'error')
+  }
+  renderRegisteredServers()
+}
+
+// Results normally arrive over the WebSocket as each server's test settles
+// (see connectLiveSocket's 'server_test_result' handler). If the socket drops
+// mid-test those results never arrive, so this backstops any row still stuck
+// on "Testing…" well after the daemon's own per-connection timeout would have
+// resolved it.
+const TEST_ALL_STUCK_TIMEOUT_MS = 15000
+
+async function testAllServers() {
+  if (!state.servers.length) return
+  const testedIds = state.servers.map((s) => s.id)
+  testedIds.forEach((id) => state.testResults.set(id, { state: 'testing' }))
+  renderRegisteredServers()
+  try {
+    const res = await fetch('/api/servers/test-all', { method: 'POST' })
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}))
+      throw new Error(body.error || `request failed (${res.status})`)
+    }
+    setTimeout(() => {
+      const stuck = testedIds.filter((id) => state.testResults.get(id)?.state === 'testing')
+      if (!stuck.length) return
+      stuck.forEach((id) => state.testResults.set(id, { state: 'unknown' }))
+      renderRegisteredServers()
+      showToast(`${stuck.length} server(s) didn't report back — the connection to the daemon may have dropped. Try testing again.`, 'error')
+    }, TEST_ALL_STUCK_TIMEOUT_MS)
+  } catch (err) {
+    testedIds.forEach((id) => state.testResults.set(id, { state: 'unknown' }))
+    renderRegisteredServers()
+    showToast(`Could not start test-all: ${err.message}`, 'error')
+  }
+}
+
+function setupTestControls() {
+  document.getElementById('test-all-servers').addEventListener('click', testAllServers)
 }
 
 // ---------- server slide-over form ----------
@@ -198,6 +269,7 @@ function renderRegisteredServers() {
 function openServerForm(id = null) {
   state.editingServerId = id
   showServerFormError(null)
+  showFormTestResult(null)
   const form = document.getElementById('server-form')
   form.reset()
   if (id) {
@@ -344,29 +416,75 @@ function showServerFormError(message) {
   el.textContent = message
 }
 
+function showFormTestResult(result) {
+  const el = document.getElementById('server-form-test-result')
+  if (!result) { el.hidden = true; el.textContent = ''; el.className = 'test-result-inline'; return }
+  el.hidden = false
+  if (result.ok) {
+    el.textContent = '✓ Connected successfully'
+    el.className = 'test-result-inline ok'
+  } else {
+    el.textContent = `✗ ${result.error || 'Connection failed'}`
+    el.className = 'test-result-inline fail'
+  }
+}
+
+function currentFormPayload() {
+  const formEl = document.getElementById('server-form')
+  const wasDisabled = formEl.elements.id.disabled
+  if (wasDisabled) formEl.elements.id.disabled = false
+  const form = new FormData(formEl)
+  if (wasDisabled) formEl.elements.id.disabled = true
+  const payload = Object.fromEntries(form.entries())
+  payload.port = Number(payload.port)
+  payload.jumpChain = state.jumpChainDraft.filter(Boolean)
+  return payload
+}
+
+async function testFormConnection() {
+  showFormTestResult(null)
+  if (state.jumpChainDraft.some((id) => !id)) {
+    showFormTestResult({ ok: false, error: 'Select a server for every jump hop, or remove the empty one.' })
+    return
+  }
+  const payload = currentFormPayload()
+
+  const btn = document.getElementById('server-form-test')
+  btn.disabled = true
+  btn.textContent = 'Testing…'
+  try {
+    const res = await fetch('/api/servers/test', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+    })
+    const body = await res.json().catch(() => ({}))
+    if (!res.ok) { showFormTestResult({ ok: false, error: body.error || `request failed (${res.status})` }); return }
+    showFormTestResult(body)
+  } catch (err) {
+    showFormTestResult({ ok: false, error: `Request failed: ${err.message}` })
+  } finally {
+    btn.disabled = false
+    btn.textContent = 'Test connection'
+  }
+}
+
 function setupServerForm() {
   document.getElementById('open-add-server').addEventListener('click', () => openServerForm())
   document.getElementById('server-form-cancel').addEventListener('click', closeServerForm)
   document.getElementById('server-form-close').addEventListener('click', closeServerForm)
   document.getElementById('server-scrim').addEventListener('click', closeServerForm)
 
+  document.getElementById('server-form-test').addEventListener('click', testFormConnection)
+
   document.getElementById('server-form').addEventListener('submit', async (e) => {
     e.preventDefault()
     showServerFormError(null)
-    const formEl = e.target
-    const wasDisabled = formEl.elements.id.disabled
-    if (wasDisabled) formEl.elements.id.disabled = false
-    const form = new FormData(formEl)
-    if (wasDisabled) formEl.elements.id.disabled = true
-    const payload = Object.fromEntries(form.entries())
-    payload.port = Number(payload.port)
-    payload.isEdit = Boolean(state.editingServerId)
 
     if (state.jumpChainDraft.some((id) => !id)) {
       showServerFormError('Select a server for every jump hop, or remove the empty one.')
       return
     }
-    payload.jumpChain = state.jumpChainDraft.filter(Boolean)
+    const payload = currentFormPayload()
+    payload.isEdit = Boolean(state.editingServerId)
 
     let res
     try {
@@ -811,6 +929,9 @@ function connectLiveSocket() {
       removeLiveCard(msg.requestId)
       renderLiveFeed()
       renderServerList()
+    } else if (msg.type === 'server_test_result') {
+      state.testResults.set(msg.id, msg.ok ? { state: 'online' } : { state: 'offline', error: msg.error })
+      renderRegisteredServers()
     }
   }
 }
@@ -829,6 +950,7 @@ loadServers()
 setupNav()
 setupServerForm()
 setupJumpHosts()
+setupTestControls()
 setupBulkImport()
 setupConfirmDialog()
 setupPalette()
