@@ -98,8 +98,11 @@ describe('SocketServer', () => {
     const runs = logStore.list({ serverId: 'srv-a1' })
     expect(runs).toHaveLength(1)
     expect(runs[0].agentLabel).toBe('test-agent')
-    expect(runs[0].output).toBe('ok\n')
     expect(runs[0].exitCode).toBe(0)
+    // list() is metadata-only by design; output comes from get()
+    expect(runs[0].output).toBeUndefined()
+    expect(runs[0].outputBytes).toBe(3)
+    expect(logStore.get(runs[0].id)?.output).toBe('ok\n')
   })
 
   it('responds with a done error event for an unknown serverId, without touching sshManager', async () => {

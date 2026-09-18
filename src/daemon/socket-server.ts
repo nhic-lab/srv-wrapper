@@ -118,7 +118,11 @@ export class SocketServer {
         this.opts.onBroadcast?.({ ...done, serverId: server.id, agentLabel: msg.agentLabel })
       } catch (err: any) {
         this.opts.logStore.finish(runId, null)
-        this.send(conn, { type: 'done', requestId, exitCode: null, error: sanitizeSshError(err) })
+        const safe = sanitizeSshError(err)
+        this.send(conn, { type: 'done', requestId, exitCode: null, error: safe })
+        // The dashboard needs this too — without it a run that failed to
+        // connect is left streaming forever in the live view.
+        this.opts.onBroadcast?.({ type: 'done', requestId, exitCode: null, error: safe, serverId: server.id, agentLabel: msg.agentLabel })
       }
       return
     }
@@ -181,6 +185,7 @@ export class SocketServer {
       }
       clearTimeout(session.sessionTimeoutTimer)
       if (session.idleTimer) clearTimeout(session.idleTimer)
+      this.finalizePendingSend(msg.sessionId)
       this.opts.sshManager.stopSession(msg.sessionId)
       this.opts.logStore.finish(session.runId, null)
       this.sessions.delete(msg.sessionId)
@@ -196,6 +201,7 @@ export class SocketServer {
       const session = this.sessions.get(sessionId)
       if (!session) return
       if (session.idleTimer) clearTimeout(session.idleTimer)
+      this.finalizePendingSend(sessionId)
       this.opts.sshManager.stopSession(sessionId)
       this.opts.logStore.finish(session.runId, null)
       this.sessions.delete(sessionId)
@@ -206,6 +212,12 @@ export class SocketServer {
     const session = this.sessions.get(sessionId)
     if (!session?.pendingConn || !session.pendingRequestId) return
     this.send(session.pendingConn, { type: 'done', requestId: session.pendingRequestId, exitCode: null })
+    // Mirrored to the dashboard so the send's live row settles instead of
+    // streaming indefinitely.
+    this.opts.onBroadcast?.({
+      type: 'done', requestId: session.pendingRequestId, exitCode: null,
+      serverId: session.serverId, agentLabel: session.agentLabel,
+    })
     session.pendingConn = null
     session.pendingRequestId = null
     session.idleTimer = null

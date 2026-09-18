@@ -160,6 +160,91 @@ describe('dashboard-server', () => {
     expect(res.body.map((r: any) => r.id)).toEqual(['r1'])
   })
 
+  it('GET /api/history never includes output and reports the total count', async () => {
+    const { app } = createDashboardApp({ registry, keychain, logStore })
+    logStore.start({ id: 'r1', serverId: 'srv-a1', agentLabel: 'a', kind: 'exec', command: 'x' })
+    logStore.appendOutput('r1', 'secret-looking output\n')
+    logStore.start({ id: 'r2', serverId: 'srv-a1', agentLabel: 'a', kind: 'exec', command: 'y' })
+    const res = await request(app).get('/api/history')
+    expect(res.status).toBe(200)
+    expect(res.body).toHaveLength(2)
+    for (const row of res.body) expect(row.output).toBeUndefined()
+    expect(res.body[0].outputBytes).toBeDefined()
+    expect(res.headers['x-total-count']).toBe('2')
+  })
+
+  it('GET /api/history honours limit and offset', async () => {
+    const { app } = createDashboardApp({ registry, keychain, logStore })
+    for (let i = 0; i < 4; i++) {
+      logStore.start({ id: `r${i}`, serverId: 'srv-a1', agentLabel: 'a', kind: 'exec', command: 'x' })
+    }
+    const res = await request(app).get('/api/history?limit=2')
+    expect(res.body).toHaveLength(2)
+    expect(res.headers['x-total-count']).toBe('4')
+    const page2 = await request(app).get('/api/history?limit=2&offset=2')
+    expect(page2.body).toHaveLength(2)
+    const ids = new Set([...res.body, ...page2.body].map((r: any) => r.id))
+    expect(ids.size).toBe(4)
+  })
+
+  it('GET /api/history/:id returns the run with its output', async () => {
+    const { app } = createDashboardApp({ registry, keychain, logStore })
+    logStore.start({ id: 'r1', serverId: 'srv-a1', agentLabel: 'a', kind: 'exec', command: 'x' })
+    logStore.appendOutput('r1', 'line one\n')
+    logStore.finish('r1', 0)
+    const res = await request(app).get('/api/history/r1')
+    expect(res.status).toBe(200)
+    expect(res.body.output).toBe('line one\n')
+    expect(res.body.exitCode).toBe(0)
+    expect(res.body.truncated).toBe(false)
+  })
+
+  it('GET /api/history/:id 404s for an unknown run', async () => {
+    const { app } = createDashboardApp({ registry, keychain, logStore })
+    const res = await request(app).get('/api/history/nope')
+    expect(res.status).toBe(404)
+  })
+
+  it('POST /api/servers/:id/test persists a successful result', async () => {
+    const sshManager = { testConnect: async () => {} } as any
+    const { app } = createDashboardApp({ registry, keychain, logStore, sshManager })
+    registry.upsert({ id: 'srv-a1', host: 'h', port: 22, username: 'u', authMethod: 'password' })
+    const res = await request(app).post('/api/servers/srv-a1/test')
+    expect(res.body).toEqual({ ok: true })
+    const rec = registry.get('srv-a1')!
+    expect(rec.lastTestOk).toBe(true)
+    expect(rec.lastTestAt).toBeGreaterThan(0)
+    expect(rec.lastTestError).toBeUndefined()
+  })
+
+  it('POST /api/servers/:id/test persists a sanitized failure', async () => {
+    const sshManager = { testConnect: async () => { throw Object.assign(new Error('connect ECONNREFUSED 10.0.0.5:22'), { code: 'ECONNREFUSED' }) } } as any
+    const { app } = createDashboardApp({ registry, keychain, logStore, sshManager })
+    registry.upsert({ id: 'srv-a1', host: 'h', port: 22, username: 'u', authMethod: 'password' })
+    const res = await request(app).post('/api/servers/srv-a1/test')
+    expect(res.body.ok).toBe(false)
+    const rec = registry.get('srv-a1')!
+    expect(rec.lastTestOk).toBe(false)
+    expect(rec.lastTestError).toBe('ssh error: connection refused')
+    // the real host:port must never reach the persisted record
+    expect(rec.lastTestError).not.toContain('10.0.0.5')
+  })
+
+  it('editing a server keeps its stored reachability result', async () => {
+    const { app } = createDashboardApp({ registry, keychain, logStore })
+    registry.upsert({ id: 'srv-a1', host: 'h', port: 22, username: 'u', authMethod: 'password' })
+    secretsSet['srv-a1'] = 'original-secret'
+    registry.setTestResult('srv-a1', true)
+    const res = await request(app).post('/api/servers').send({
+      id: 'srv-a1', host: 'h2', port: 22, username: 'u', authMethod: 'password', secret: 's', isEdit: true,
+    })
+    expect(res.status).toBe(201)
+    const rec = registry.get('srv-a1')!
+    expect(rec.host).toBe('h2')
+    expect(rec.lastTestOk).toBe(true)
+    expect(rec.lastTestAt).toBeGreaterThan(0)
+  })
+
   it('POST /api/servers rolls back the registry entry if Keychain.setSecret throws', async () => {
     const failingKeychain = makeKeychain(secretsSet, 1)
     const { app } = createDashboardApp({ registry, keychain: failingKeychain, logStore })

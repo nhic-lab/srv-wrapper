@@ -42,7 +42,9 @@ function validateServerInput(input: any): string | null {
     }
   }
   // Editing an existing server may omit the secret to keep the one already stored in Keychain.
-  if (!input.secret && !input.isEdit) return 'missing secret'
+  // Key auth may omit it entirely: there the credential is the key file at
+  // keyPath, and the secret is only its (often absent) passphrase.
+  if (!input.secret && !input.isEdit && input.authMethod !== 'key') return 'missing secret'
   return null
 }
 
@@ -84,8 +86,10 @@ export function createDashboardApp(opts: DashboardOptions): { app: express.Expre
     let priorSecret: string | undefined
     try {
       priorSecret = existing ? opts.keychain.getSecret(input.id) : undefined
-      const secretToStore = input.secret || priorSecret
-      if (!secretToStore) throw new Error('missing secret')
+      // A passphrase-less private key legitimately has no secret to store.
+      const keyFallback = input.authMethod === 'key' ? '' : undefined
+      const secretToStore = input.secret || priorSecret || keyFallback
+      if (secretToStore === undefined) throw new Error('missing secret')
       opts.keychain.setSecret(input.id, secretToStore)
     } catch (err: any) {
       if (existing) {
@@ -165,9 +169,12 @@ export function createDashboardApp(opts: DashboardOptions): { app: express.Expre
     if (!server) return res.status(404).json({ error: `unknown server: ${req.params.id}` })
     try {
       await opts.sshManager.testConnect(server)
+      opts.registry.setTestResult(server.id, true)
       res.json({ ok: true })
     } catch (err: any) {
-      res.json({ ok: false, error: sanitizeSshError(err) })
+      const safe = sanitizeSshError(err)
+      opts.registry.setTestResult(server.id, false, safe)
+      res.json({ ok: false, error: safe })
     }
   })
 
@@ -194,7 +201,8 @@ export function createDashboardApp(opts: DashboardOptions): { app: express.Expre
       // treat that the same as "no secret provided" rather than crashing the request.
       secret = undefined
     }
-    if (!secret) return res.status(400).json({ error: 'missing secret' })
+    if (secret === undefined && input.authMethod === 'key') secret = ''
+    if (secret === undefined) return res.status(400).json({ error: 'missing secret' })
 
     const record: ServerRecord = {
       id: input.id, host: input.host, port: input.port, username: input.username,
@@ -216,8 +224,15 @@ export function createDashboardApp(opts: DashboardOptions): { app: express.Expre
     for (const server of servers) {
       opts.sshManager
         .testConnect(server)
-        .then(() => broadcast({ type: 'server_test_result', id: server.id, ok: true }))
-        .catch((err: any) => broadcast({ type: 'server_test_result', id: server.id, ok: false, error: sanitizeSshError(err) }))
+        .then(() => {
+          opts.registry.setTestResult(server.id, true)
+          broadcast({ type: 'server_test_result', id: server.id, ok: true, at: Date.now() })
+        })
+        .catch((err: any) => {
+          const safe = sanitizeSshError(err)
+          opts.registry.setTestResult(server.id, false, safe)
+          broadcast({ type: 'server_test_result', id: server.id, ok: false, error: safe, at: Date.now() })
+        })
     }
   })
 
@@ -227,9 +242,32 @@ export function createDashboardApp(opts: DashboardOptions): { app: express.Expre
     res.status(204).end()
   })
 
+  /**
+   * Run metadata only, newest first. Output is deliberately excluded: returning
+   * it for every run is what made this endpoint fail with "RangeError: Invalid
+   * string length" once stored output passed V8's string ceiling. The total row
+   * count rides along in X-Total-Count so the UI can say "showing N of M"
+   * without changing the array response shape.
+   */
   app.get('/api/history', (req, res) => {
     const { serverId, agentLabel } = req.query as { serverId?: string; agentLabel?: string }
-    res.json(opts.logStore.list({ serverId, agentLabel }))
+    const limit = Number.parseInt(String(req.query.limit ?? ''), 10)
+    const offset = Number.parseInt(String(req.query.offset ?? ''), 10)
+    const runs = opts.logStore.list({
+      serverId,
+      agentLabel,
+      limit: Number.isFinite(limit) ? limit : undefined,
+      offset: Number.isFinite(offset) ? offset : undefined,
+    })
+    res.set('X-Total-Count', String(opts.logStore.count({ serverId, agentLabel })))
+    res.json(runs)
+  })
+
+  /** One run including its (already capped) output. */
+  app.get('/api/history/:id', (req, res) => {
+    const run = opts.logStore.get(req.params.id)
+    if (!run) return res.status(404).json({ error: `unknown run: ${req.params.id}` })
+    res.json(run)
   })
 
   app.use(express.static(new URL('../../public', import.meta.url).pathname))

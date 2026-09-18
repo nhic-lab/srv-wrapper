@@ -27,6 +27,18 @@ export class Registry {
     if (!cols.some((c) => c.name === 'jump_chain')) {
       this.db.exec(`ALTER TABLE servers ADD COLUMN jump_chain TEXT`)
     }
+    // Reachability is persisted so the Servers view's online/offline filter is
+    // still meaningful after a refresh or a daemon restart — with 50+ servers,
+    // re-running "Test all" just to repopulate an in-memory map is not viable.
+    if (!cols.some((c) => c.name === 'last_test_at')) {
+      this.db.exec(`ALTER TABLE servers ADD COLUMN last_test_at INTEGER`)
+    }
+    if (!cols.some((c) => c.name === 'last_test_ok')) {
+      this.db.exec(`ALTER TABLE servers ADD COLUMN last_test_ok INTEGER`)
+    }
+    if (!cols.some((c) => c.name === 'last_test_error')) {
+      this.db.exec(`ALTER TABLE servers ADD COLUMN last_test_error TEXT`)
+    }
   }
 
   upsert(record: Omit<ServerRecord, 'createdAt' | 'updatedAt'>): ServerRecord {
@@ -71,11 +83,22 @@ export class Registry {
       jumpChain: row.jump_chain ? JSON.parse(row.jump_chain) : undefined,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
+      lastTestAt: row.last_test_at ?? undefined,
+      lastTestOk: row.last_test_ok == null ? undefined : Boolean(row.last_test_ok),
+      lastTestError: row.last_test_error ?? undefined,
     }
   }
 
   setHostKeyFingerprint(id: string, fingerprint: string): void {
     this.db.prepare('UPDATE servers SET host_key_fingerprint = ? WHERE id = ?').run(fingerprint, id)
+  }
+
+  /** Records the outcome of a reachability check. `error` is the already
+   *  sanitized message — never a raw ssh2/Node error (see sanitizeSshError). */
+  setTestResult(id: string, ok: boolean, error?: string): void {
+    this.db
+      .prepare('UPDATE servers SET last_test_at = ?, last_test_ok = ?, last_test_error = ? WHERE id = ?')
+      .run(Date.now(), ok ? 1 : 0, ok ? null : (error ?? null), id)
   }
 
   list(): ServerRecord[] {

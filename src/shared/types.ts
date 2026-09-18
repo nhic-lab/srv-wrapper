@@ -11,6 +11,11 @@ export interface ServerRecord {
   jumpChain?: string[]
   createdAt: number
   updatedAt: number
+  /** Last reachability check, persisted so the online/offline filter survives
+   *  a refresh or daemon restart. Absent until the server has been tested. */
+  lastTestAt?: number
+  lastTestOk?: boolean
+  lastTestError?: string
 }
 
 export type RunKind = 'exec' | 'session'
@@ -25,6 +30,25 @@ export interface RunRecord {
   exitCode: number | null
   startedAt: number
   endedAt: number | null
+  /** Total bytes the command produced, including any elided by the output cap. */
+  outputBytes: number
+  /** True when `output` is a head+tail extract rather than the whole stream. */
+  truncated: boolean
+}
+
+/** Run metadata without `output` — what the dashboard's list pane consumes. */
+export interface RunSummary {
+  id: string
+  serverId: string
+  agentLabel: string
+  kind: RunKind
+  command: string | null
+  exitCode: number | null
+  startedAt: number
+  endedAt: number | null
+  outputBytes: number
+  truncated: boolean
+  hasOutput: boolean
 }
 
 export interface ExecRequest {
