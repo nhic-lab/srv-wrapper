@@ -1,0 +1,103 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="530" viewBox="0 0 800 530" role="img" aria-labelledby="archTitle archDesc">
+  <title id="archTitle">srv-wrapper architecture and trust boundary</title>
+  <desc id="archDesc">Left-to-right flow: an AI agent invokes the srv CLI, which talks over a 0600 Unix domain socket at ~/.srv/srv.sock to the srvd daemon, which opens an ssh2 connection to the real server. A dashed trust boundary separates the untrusted agent side, which only ever knows the opaque id srv-a1, from the trusted daemon side, which holds the SQLite registry, macOS Keychain secrets, the audit log, the local dashboard on 127.0.0.1 port 4280, and the real host deploy-01.internal port 22. Only stdout, stderr and an exit code flow back.</desc>
+
+  <defs>
+    <marker id="arrowFwd" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#58A6FF"/>
+    </marker>
+    <marker id="arrowBack" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#3FB950"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="800" height="530" fill="#11161B"/>
+
+  <text x="24" y="34" font-family="Inter, -apple-system, Segoe UI, sans-serif" font-size="18" font-weight="600" fill="#E6EDF3">srv-wrapper — remote execution by opaque server-id</text>
+  <text x="24" y="58" font-family="Inter, -apple-system, Segoe UI, sans-serif" font-size="13" fill="#93A1AE">The AI agent and the srv CLI only ever know an id. Host, port, user and credentials never leave the daemon.</text>
+
+  <!-- regions -->
+  <rect x="14" y="78" width="336" height="380" rx="12" fill="none" stroke="#2E3A44" stroke-width="1.5" stroke-dasharray="6 5"/>
+  <text x="28" y="101" font-family="Inter, -apple-system, Segoe UI, sans-serif" font-size="12" font-weight="600" letter-spacing="1.2" fill="#93A1AE">UNTRUSTED — AGENT SIDE</text>
+
+  <rect x="360" y="78" width="432" height="380" rx="12" fill="#161D24" stroke="#D29922" stroke-width="1.5" stroke-dasharray="6 5"/>
+  <text x="374" y="101" font-family="Inter, -apple-system, Segoe UI, sans-serif" font-size="12" font-weight="600" letter-spacing="1.2" fill="#D29922">TRUSTED — INSIDE srvd</text>
+
+  <!-- arrow labels -->
+  <text x="178" y="140" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" fill="#58A6FF">srv exec srv-a1 "npm run build"</text>
+  <text x="178" y="157" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" fill="#93A1AE">--agent claude-code</text>
+
+  <text x="362" y="140" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" fill="#58A6FF">~/.srv/srv.sock</text>
+  <text x="362" y="157" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" fill="#93A1AE">0600 · NDJSON</text>
+
+  <text x="624" y="140" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" fill="#58A6FF">ssh2</text>
+  <text x="624" y="157" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" fill="#93A1AE">TOFU pinned key</text>
+
+  <!-- nodes -->
+  <rect x="20" y="170" width="130" height="80" rx="10" fill="#1B222A" stroke="#2E3A44" stroke-width="1.5"/>
+  <text x="85" y="200" text-anchor="middle" font-family="Inter, -apple-system, Segoe UI, sans-serif" font-size="14" font-weight="600" fill="#E6EDF3">AI Agent</text>
+  <text x="85" y="220" text-anchor="middle" font-family="Inter, -apple-system, Segoe UI, sans-serif" font-size="12" fill="#93A1AE">coding assistant</text>
+  <text x="85" y="240" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" fill="#58A6FF">sees: srv-a1</text>
+
+  <rect x="205" y="170" width="130" height="80" rx="10" fill="#1B222A" stroke="#2E3A44" stroke-width="1.5"/>
+  <text x="270" y="200" text-anchor="middle" font-family="Inter, -apple-system, Segoe UI, sans-serif" font-size="14" font-weight="600" fill="#E6EDF3">srv CLI</text>
+  <text x="270" y="220" text-anchor="middle" font-family="Inter, -apple-system, Segoe UI, sans-serif" font-size="12" fill="#93A1AE">no credentials</text>
+  <text x="270" y="240" text-anchor="middle" font-family="Inter, -apple-system, Segoe UI, sans-serif" font-size="12" fill="#93A1AE">no SSH of its own</text>
+
+  <rect x="390" y="170" width="210" height="190" rx="10" fill="#1B222A" stroke="#2E3A44" stroke-width="1.5"/>
+  <text x="495" y="196" text-anchor="middle" font-family="Inter, -apple-system, Segoe UI, sans-serif" font-size="14" font-weight="600" fill="#E6EDF3">srvd daemon</text>
+  <text x="495" y="215" text-anchor="middle" font-family="Inter, -apple-system, Segoe UI, sans-serif" font-size="12" fill="#93A1AE">local, macOS-only</text>
+
+  <rect x="400" y="226" width="190" height="26" rx="6" fill="#11161B" stroke="#2E3A44"/>
+  <text x="410" y="243" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" fill="#E6EDF3">SQLite registry</text>
+  <rect x="400" y="258" width="190" height="26" rx="6" fill="#11161B" stroke="#2E3A44"/>
+  <text x="410" y="275" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" fill="#E6EDF3">macOS Keychain</text>
+  <rect x="400" y="290" width="190" height="26" rx="6" fill="#11161B" stroke="#2E3A44"/>
+  <text x="410" y="307" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" fill="#E6EDF3">SQLite audit log</text>
+  <rect x="400" y="322" width="190" height="26" rx="6" fill="#11161B" stroke="#2E3A44"/>
+  <text x="410" y="339" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" fill="#E6EDF3">Dashboard 127.0.0.1:4280</text>
+
+  <rect x="650" y="170" width="142" height="80" rx="10" fill="#1B222A" stroke="#2E3A44" stroke-width="1.5"/>
+  <text x="721" y="200" text-anchor="middle" font-family="Inter, -apple-system, Segoe UI, sans-serif" font-size="14" font-weight="600" fill="#E6EDF3">Real server</text>
+  <text x="721" y="222" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" fill="#93A1AE">deploy-01.internal</text>
+  <text x="721" y="240" text-anchor="middle" font-family="Inter, -apple-system, Segoe UI, sans-serif" font-size="12" fill="#93A1AE">port 22 · user deploy</text>
+
+  <!-- forward arrows -->
+  <line x1="150" y1="200" x2="201" y2="200" stroke="#58A6FF" stroke-width="2" marker-end="url(#arrowFwd)"/>
+  <line x1="335" y1="200" x2="386" y2="200" stroke="#58A6FF" stroke-width="2" marker-end="url(#arrowFwd)"/>
+  <line x1="600" y1="200" x2="646" y2="200" stroke="#58A6FF" stroke-width="2" marker-end="url(#arrowFwd)"/>
+
+  <!-- return arrows -->
+  <line x1="201" y1="228" x2="152" y2="228" stroke="#3FB950" stroke-width="2" marker-end="url(#arrowBack)"/>
+  <line x1="386" y1="228" x2="337" y2="228" stroke="#3FB950" stroke-width="2" marker-end="url(#arrowBack)"/>
+  <line x1="646" y1="228" x2="602" y2="228" stroke="#3FB950" stroke-width="2" marker-end="url(#arrowBack)"/>
+
+  <!-- left panel -->
+  <rect x="20" y="272" width="315" height="176" rx="10" fill="#1B222A" stroke="#2E3A44" stroke-width="1.5"/>
+  <text x="36" y="297" font-family="Inter, -apple-system, Segoe UI, sans-serif" font-size="12" font-weight="600" letter-spacing="1.2" fill="#93A1AE">ALL THE AGENT SIDE EVER SEES</text>
+  <circle cx="41" cy="320" r="3" fill="#58A6FF"/>
+  <text x="53" y="324" font-family="Inter, -apple-system, Segoe UI, sans-serif" font-size="13" fill="#E6EDF3">server id <tspan font-family="ui-monospace, SFMono-Regular, Menlo, monospace" fill="#58A6FF">srv-a1</tspan></text>
+  <circle cx="41" cy="341" r="3" fill="#58A6FF"/>
+  <text x="53" y="345" font-family="Inter, -apple-system, Segoe UI, sans-serif" font-size="13" fill="#E6EDF3">command <tspan font-family="ui-monospace, SFMono-Regular, Menlo, monospace" fill="#58A6FF">npm run build</tspan></text>
+  <circle cx="41" cy="362" r="3" fill="#58A6FF"/>
+  <text x="53" y="366" font-family="Inter, -apple-system, Segoe UI, sans-serif" font-size="13" fill="#E6EDF3">agent label <tspan font-family="ui-monospace, SFMono-Regular, Menlo, monospace" fill="#58A6FF">claude-code</tspan></text>
+  <circle cx="41" cy="383" r="3" fill="#3FB950"/>
+  <text x="53" y="387" font-family="Inter, -apple-system, Segoe UI, sans-serif" font-size="13" fill="#E6EDF3">stdout / stderr stream</text>
+  <circle cx="41" cy="404" r="3" fill="#3FB950"/>
+  <text x="53" y="408" font-family="Inter, -apple-system, Segoe UI, sans-serif" font-size="13" fill="#E6EDF3">exit code</text>
+  <circle cx="41" cy="425" r="3" fill="#3FB950"/>
+  <text x="53" y="429" font-family="Inter, -apple-system, Segoe UI, sans-serif" font-size="13" fill="#E6EDF3">sanitized error text (no host:port)</text>
+
+  <!-- right panel -->
+  <rect x="366" y="376" width="418" height="72" rx="10" fill="#1B222A" stroke="#2E3A44" stroke-width="1.5"/>
+  <text x="382" y="400" font-family="Inter, -apple-system, Segoe UI, sans-serif" font-size="12" font-weight="600" letter-spacing="1.2" fill="#D29922">HELD ONLY BY srvd</text>
+  <text x="382" y="421" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" fill="#E6EDF3">deploy-01.internal:22 · user deploy</text>
+  <text x="382" y="439" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" fill="#93A1AE">private key / password — macOS Keychain</text>
+
+  <!-- captions -->
+  <line x1="24" y1="474" x2="46" y2="474" stroke="#3FB950" stroke-width="2" marker-end="url(#arrowBack)"/>
+  <text x="58" y="478" font-family="Inter, -apple-system, Segoe UI, sans-serif" font-size="13" fill="#E6EDF3">Return path — stdout, stderr and an exit code only.</text>
+
+  <line x1="24" y1="502" x2="46" y2="502" stroke="#D29922" stroke-width="2" stroke-dasharray="5 4"/>
+  <text x="58" y="506" font-family="Inter, -apple-system, Segoe UI, sans-serif" font-size="13" fill="#E6EDF3">Trust boundary — nothing to the left ever sees host, port, user, or credentials.</text>
+</svg>

@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="444" viewBox="0 0 800 444" role="img" aria-labelledby="baTitle baDesc">
+  <title id="baTitle">Giving an AI agent server access, without and with srv-wrapper</title>
+  <desc id="baDesc">Two side-by-side columns comparing four matched concerns. Without srv-wrapper: the agent holds the private key ~/.ssh/id_ed25519 and real hostnames; credentials and host names can land in prompts, logs and model context; there is no record of what an agent ran; revoking access means rotating keys everywhere they were copied. With srv-wrapper: the agent holds only the id srv-a1 while keys and passwords stay in the macOS Keychain; only stdout, stderr and an exit code come back and SSH errors are sanitized; every exec and session is written to the SQLite audit log with its agent label; revoking access is deleting one registry entry.</desc>
+
+  <rect x="0" y="0" width="800" height="444" fill="#11161B"/>
+
+  <text x="24" y="34" font-family="Inter, -apple-system, Segoe UI, sans-serif" font-size="18" font-weight="600" fill="#E6EDF3">Giving an AI coding agent access to a server</text>
+  <text x="24" y="58" font-family="Inter, -apple-system, Segoe UI, sans-serif" font-size="13" fill="#93A1AE">What changes when the agent works through srvd instead of holding the credentials itself.</text>
+
+  <!-- column headers -->
+  <rect x="20" y="76" width="370" height="40" rx="10" fill="#1B222A" stroke="#F85149" stroke-width="1.5"/>
+  <text x="205" y="102" text-anchor="middle" font-family="Inter, -apple-system, Segoe UI, sans-serif" font-size="15" font-weight="600" fill="#F85149">Without srv-wrapper</text>
+
+  <rect x="410" y="76" width="370" height="40" rx="10" fill="#1B222A" stroke="#3FB950" stroke-width="1.5"/>
+  <text x="595" y="102" text-anchor="middle" font-family="Inter, -apple-system, Segoe UI, sans-serif" font-size="15" font-weight="600" fill="#3FB950">With srv-wrapper</text>
+
+  <!-- row 1 -->
+  <rect x="20" y="128" width="370" height="68" rx="10" fill="#1B222A" stroke="#2E3A44" stroke-width="1.5"/>
+  <rect x="20" y="136" width="4" height="52" rx="2" fill="#F85149"/>
+  <text x="40" y="150" font-family="Inter, -apple-system, Segoe UI, sans-serif" font-size="12" font-weight="600" letter-spacing="1.2" fill="#93A1AE">CREDENTIALS</text>
+  <text x="40" y="170" font-family="Inter, -apple-system, Segoe UI, sans-serif" font-size="13" fill="#E6EDF3">Agent holds <tspan font-family="ui-monospace, SFMono-Regular, Menlo, monospace" fill="#D29922">~/.ssh/id_ed25519</tspan> plus the</text>
+  <text x="40" y="188" font-family="Inter, -apple-system, Segoe UI, sans-serif" font-size="13" fill="#E6EDF3">real hostnames, ports and usernames.</text>
+
+  <rect x="410" y="128" width="370" height="68" rx="10" fill="#1B222A" stroke="#2E3A44" stroke-width="1.5"/>
+  <rect x="410" y="136" width="4" height="52" rx="2" fill="#3FB950"/>
+  <text x="430" y="150" font-family="Inter, -apple-system, Segoe UI, sans-serif" font-size="12" font-weight="600" letter-spacing="1.2" fill="#93A1AE">CREDENTIALS</text>
+  <text x="430" y="170" font-family="Inter, -apple-system, Segoe UI, sans-serif" font-size="13" fill="#E6EDF3">Agent holds only <tspan font-family="ui-monospace, SFMono-Regular, Menlo, monospace" fill="#58A6FF">srv-a1</tspan>. Keys and</text>
+  <text x="430" y="188" font-family="Inter, -apple-system, Segoe UI, sans-serif" font-size="13" fill="#E6EDF3">passwords stay in the macOS Keychain.</text>
+
+  <!-- row 2 -->
+  <rect x="20" y="204" width="370" height="68" rx="10" fill="#1B222A" stroke="#2E3A44" stroke-width="1.5"/>
+  <rect x="20" y="212" width="4" height="52" rx="2" fill="#D29922"/>
+  <text x="40" y="226" font-family="Inter, -apple-system, Segoe UI, sans-serif" font-size="12" font-weight="600" letter-spacing="1.2" fill="#93A1AE">EXPOSURE</text>
+  <text x="40" y="246" font-family="Inter, -apple-system, Segoe UI, sans-serif" font-size="13" fill="#E6EDF3">Credentials and host names can land in</text>
+  <text x="40" y="264" font-family="Inter, -apple-system, Segoe UI, sans-serif" font-size="13" fill="#E6EDF3">prompts, logs and model context.</text>
+
+  <rect x="410" y="204" width="370" height="68" rx="10" fill="#1B222A" stroke="#2E3A44" stroke-width="1.5"/>
+  <rect x="410" y="212" width="4" height="52" rx="2" fill="#3FB950"/>
+  <text x="430" y="226" font-family="Inter, -apple-system, Segoe UI, sans-serif" font-size="12" font-weight="600" letter-spacing="1.2" fill="#93A1AE">EXPOSURE</text>
+  <text x="430" y="246" font-family="Inter, -apple-system, Segoe UI, sans-serif" font-size="13" fill="#E6EDF3">Only stdout, stderr and an exit code come</text>
+  <text x="430" y="264" font-family="Inter, -apple-system, Segoe UI, sans-serif" font-size="13" fill="#E6EDF3">back. SSH errors are sanitized first.</text>
+
+  <!-- row 3 -->
+  <rect x="20" y="280" width="370" height="68" rx="10" fill="#1B222A" stroke="#2E3A44" stroke-width="1.5"/>
+  <rect x="20" y="288" width="4" height="52" rx="2" fill="#F85149"/>
+  <text x="40" y="302" font-family="Inter, -apple-system, Segoe UI, sans-serif" font-size="12" font-weight="600" letter-spacing="1.2" fill="#93A1AE">AUDIT TRAIL</text>
+  <text x="40" y="322" font-family="Inter, -apple-system, Segoe UI, sans-serif" font-size="13" fill="#E6EDF3">No record of which agent ran what,</text>
+  <text x="40" y="340" font-family="Inter, -apple-system, Segoe UI, sans-serif" font-size="13" fill="#E6EDF3">on which server, or when.</text>
+
+  <rect x="410" y="280" width="370" height="68" rx="10" fill="#1B222A" stroke="#2E3A44" stroke-width="1.5"/>
+  <rect x="410" y="288" width="4" height="52" rx="2" fill="#3FB950"/>
+  <text x="430" y="302" font-family="Inter, -apple-system, Segoe UI, sans-serif" font-size="12" font-weight="600" letter-spacing="1.2" fill="#93A1AE">AUDIT TRAIL</text>
+  <text x="430" y="322" font-family="Inter, -apple-system, Segoe UI, sans-serif" font-size="13" fill="#E6EDF3">Every exec and session lands in the SQLite</text>
+  <text x="430" y="340" font-family="Inter, -apple-system, Segoe UI, sans-serif" font-size="13" fill="#E6EDF3">audit log, tagged with the agent label.</text>
+
+  <!-- row 4 -->
+  <rect x="20" y="356" width="370" height="68" rx="10" fill="#1B222A" stroke="#2E3A44" stroke-width="1.5"/>
+  <rect x="20" y="364" width="4" height="52" rx="2" fill="#D29922"/>
+  <text x="40" y="378" font-family="Inter, -apple-system, Segoe UI, sans-serif" font-size="12" font-weight="600" letter-spacing="1.2" fill="#93A1AE">REVOCATION</text>
+  <text x="40" y="398" font-family="Inter, -apple-system, Segoe UI, sans-serif" font-size="13" fill="#E6EDF3">Revoking access means rotating keys</text>
+  <text x="40" y="416" font-family="Inter, -apple-system, Segoe UI, sans-serif" font-size="13" fill="#E6EDF3">everywhere they were copied.</text>
+
+  <rect x="410" y="356" width="370" height="68" rx="10" fill="#1B222A" stroke="#2E3A44" stroke-width="1.5"/>
+  <rect x="410" y="364" width="4" height="52" rx="2" fill="#3FB950"/>
+  <text x="430" y="378" font-family="Inter, -apple-system, Segoe UI, sans-serif" font-size="12" font-weight="600" letter-spacing="1.2" fill="#93A1AE">REVOCATION</text>
+  <text x="430" y="398" font-family="Inter, -apple-system, Segoe UI, sans-serif" font-size="13" fill="#E6EDF3">Revoke by deleting one registry entry;</text>
+  <text x="430" y="416" font-family="Inter, -apple-system, Segoe UI, sans-serif" font-size="13" fill="#E6EDF3">the id stops resolving to anything.</text>
+</svg>
