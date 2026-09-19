@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import http from 'node:http'
 import fs from 'node:fs'
 import { Registry } from './registry.js'

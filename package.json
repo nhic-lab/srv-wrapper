@@ -1,16 +1,53 @@
 {
-  "name": "srv-wrapper",
+  "name": "@nhic-lab/srv-wrapper",
   "version": "0.1.0",
+  "publishConfig": {
+    "access": "public"
+  },
+  "description": "Local daemon + CLI that lets AI agents run commands on registered servers by an opaque server-id only, never seeing real hostnames or credentials.",
+  "keywords": [
+    "ssh",
+    "cli",
+    "daemon",
+    "ai-agent",
+    "server-management",
+    "audit-log"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nhic-lab/srv-wrapper.git"
+  },
+  "homepage": "https://github.com/nhic-lab/srv-wrapper#readme",
+  "bugs": {
+    "url": "https://github.com/nhic-lab/srv-wrapper/issues"
+  },
+  "os": [
+    "darwin"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
   "type": "module",
   "bin": {
-    "srv": "./dist/cli/index.js",
-    "srvd": "./dist/daemon/index.js"
+    "srv": "dist/cli/index.js",
+    "srvd": "dist/daemon/index.js"
   },
+  "files": [
+    "dist",
+    "public",
+    "scripts/install-launchd.sh",
+    "scripts/com.srv-wrapper.daemon.plist",
+    "scripts/compact-log.mjs",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "vitest run",
     "dev:daemon": "tsx src/daemon/index.ts",
-    "compact-log": "node scripts/compact-log.mjs"
+    "compact-log": "node scripts/compact-log.mjs",
+    "prepublishOnly": "npm run build && npm test"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.2",
