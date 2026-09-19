@@ -1,6 +1,6 @@
 {
   "name": "@nhic-lab/srv-wrapper",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publishConfig": {
     "access": "public"
   },
@@ -36,6 +36,7 @@
   "files": [
     "dist",
     "public",
+    "docs/assets",
     "scripts/install-launchd.sh",
     "scripts/com.srv-wrapper.daemon.plist",
     "scripts/compact-log.mjs",
