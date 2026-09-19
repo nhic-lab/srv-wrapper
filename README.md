@@ -148,10 +148,10 @@ The dashboard supports light and dark themes and follows your system setting unt
 ## Running the daemon on login
 
 ```bash
-./scripts/install-launchd.sh
+srv daemon install
 ```
 
-This installs a `launchd` agent (`~/Library/LaunchAgents/com.srv-wrapper.daemon.plist`) that runs the built daemon and restarts it if it crashes. Logs go to `~/.srv/daemon.log` and `~/.srv/daemon.error.log`.
+This installs a `launchd` agent (`~/Library/LaunchAgents/com.srv-wrapper.daemon.plist`) that runs `srvd` and restarts it if it crashes. Logs go to `~/.srv/daemon.log` and `~/.srv/daemon.error.log`. Check whether it's loaded with `srv daemon status`, and remove it with `srv daemon uninstall`.
 
 > This writes outside the project directory and changes what starts on login. Run it deliberately.
 

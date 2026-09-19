@@ -2,6 +2,7 @@
 import { Command } from 'commander'
 import { execCommand, sessionStart, sessionSend, sessionStop, listServers } from './client.js'
 import { srvSocketPath } from '../shared/paths.js'
+import { installLaunchd, uninstallLaunchd, daemonStatus } from './daemon-install.js'
 
 const program = new Command()
 
@@ -66,6 +67,44 @@ session
   .command('stop <session-id>')
   .action(async (sessionId: string) => {
     await sessionStop({ socketPath: srvSocketPath(), sessionId })
+  })
+
+const daemon = program.command('daemon').description('Manage the srvd background daemon')
+
+daemon
+  .command('install')
+  .description('Install and start srvd as a launchd agent that runs on login (macOS only)')
+  .action(() => {
+    try {
+      installLaunchd()
+    } catch (err: any) {
+      process.stderr.write(`srv: ${err.message}\n`)
+      process.exit(1)
+    }
+  })
+
+daemon
+  .command('uninstall')
+  .description('Remove the srvd launchd agent')
+  .action(() => {
+    try {
+      uninstallLaunchd()
+    } catch (err: any) {
+      process.stderr.write(`srv: ${err.message}\n`)
+      process.exit(1)
+    }
+  })
+
+daemon
+  .command('status')
+  .description('Show whether the srvd launchd agent is loaded')
+  .action(() => {
+    try {
+      daemonStatus()
+    } catch (err: any) {
+      process.stderr.write(`srv: ${err.message}\n`)
+      process.exit(1)
+    }
   })
 
 program.parseAsync(process.argv)

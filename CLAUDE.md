@@ -21,7 +21,7 @@ node dist/cli/index.js exec <server-id> "<command>" --agent <label>
 npm link                                       # exposes `srv`/`srvd` globally (see package.json bin)
 ```
 
-`scripts/install-launchd.sh` installs a launchd agent that runs the *built* daemon (`dist/daemon/index.js`) and auto-starts it on login — this is a persistent system-level change outside the project directory; never run it without the user's explicit go-ahead. It reads `scripts/com.srv-wrapper.daemon.plist` as a template.
+`srv daemon install` (`src/cli/daemon-install.ts`) generates a launchd plist in-process (pointing at `process.execPath` and the daemon's resolved `dist/daemon/index.js` path, so it works whether run from a clone or a global npm install) and loads it via `launchctl`, auto-starting `srvd` on login — this is a persistent system-level change outside the project directory; never run it without the user's explicit go-ahead. `srv daemon uninstall` reverses it and `srv daemon status` checks whether it's loaded.
 
 ## Architecture
 

@@ -37,8 +37,6 @@
     "dist",
     "public",
     "docs/assets",
-    "scripts/install-launchd.sh",
-    "scripts/com.srv-wrapper.daemon.plist",
     "scripts/compact-log.mjs",
     "README.md",
     "LICENSE"
