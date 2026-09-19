@@ -60,7 +60,7 @@ It listens on a Unix socket at `~/.srv/srv.sock` and serves the dashboard on `12
 
 Open **http://127.0.0.1:4280** and add a server: pick an id (`srv-a1`), then enter the host, port, username, auth method, and password or key passphrase. Those details are stored by the daemon and never leave it.
 
-<img src="docs/assets/dashboard-register.png" alt="Dashboard registration form for a new server, showing fields for server id, host, port, username, auth method, and key path or password." width="1280">
+<img src="docs/assets/dashboard-register.png" alt="Dashboard registration form for a new server, showing fields for server id, host, port, username, auth method, and key path or password." width="800">
 
 **4. Run a command**
 
@@ -120,19 +120,19 @@ Served at **http://127.0.0.1:4280** while `srvd` runs. It has three views:
 
 Register servers one at a time or via bulk JSON import, edit them, test connectivity individually or all at once, and delete them. Reachability results are persisted, so a refresh doesn't discard your last "Test all".
 
-<img src="docs/assets/dashboard-list.png" alt="Dashboard Servers view in dark mode, showing a registered server selected in the list with its connection details, host key fingerprint, and recent runs in the detail pane." width="1280">
+<img src="docs/assets/dashboard-list.png" alt="Dashboard Servers view in dark mode, showing a registered server selected in the list with its connection details, host key fingerprint, and recent runs in the detail pane." width="800">
 
 ### Live
 
 Every `exec` and session in flight, streamed over WebSocket, labelled by the `--agent` value that started it.
 
-<img src="docs/assets/dashboard-live.png" alt="Dashboard Live view showing a command in progress, with the agent label, target, elapsed time, and streaming output." width="1280">
+<img src="docs/assets/dashboard-live.png" alt="Dashboard Live view showing a command in progress, with the agent label, target, elapsed time, and streaming output." width="800">
 
 ### History
 
 Every past run: server id, agent label, command, exit code, timing, and full captured output. Paginated, newest first.
 
-<img src="docs/assets/dashboard-history.png" alt="Dashboard History view listing past runs with exit codes and timestamps, with one run selected showing its full command and output." width="1280">
+<img src="docs/assets/dashboard-history.png" alt="Dashboard History view listing past runs with exit codes and timestamps, with one run selected showing its full command and output." width="800">
 
 The dashboard supports light and dark themes and follows your system setting until you choose one explicitly — the Servers and Live screenshots above are in dark mode; History is shown in light mode for contrast.
 
