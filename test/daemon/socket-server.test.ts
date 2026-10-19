@@ -162,6 +162,37 @@ describe('SocketServer', () => {
     expect(done.error).toMatch(/authentication failed/i)
   })
 
+  it('marks a connection-level failure (never reached the remote command) as retryable', async () => {
+    const connErr: any = new Error('connect ECONNREFUSED')
+    connErr.code = 'ECONNREFUSED'
+    const refusingSshManager = new SshManager(() => 'secret', async () => { throw connErr })
+    await server.stop()
+    server = new SocketServer({ socketPath, registry, logStore, sshManager: refusingSshManager })
+    await server.start()
+
+    const events = await connectAndSend({
+      type: 'exec', serverId: 'srv-a1', agentLabel: 'test-agent', command: 'echo ok', requestId: 'req-refused',
+    })
+    const done = events.find((e) => e.type === 'done')
+    expect(done.retryable).toBe(true)
+  })
+
+  it('does not mark a command timeout as retryable, since the command may already have run', async () => {
+    const { CommandTimeoutError } = await import('../../src/daemon/ssh-manager.js')
+    const timeoutSshManager = new SshManager(() => 'secret', async () => {
+      throw new CommandTimeoutError(5000)
+    })
+    await server.stop()
+    server = new SocketServer({ socketPath, registry, logStore, sshManager: timeoutSshManager })
+    await server.start()
+
+    const events = await connectAndSend({
+      type: 'exec', serverId: 'srv-a1', agentLabel: 'test-agent', command: 'sleep 999', requestId: 'req-timeout-retryable',
+    })
+    const done = events.find((e) => e.type === 'done')
+    expect(done.retryable).not.toBe(true)
+  })
+
   it('reports a command timeout with a plain duration message instead of the generic connection-failure message', async () => {
     const { CommandTimeoutError } = await import('../../src/daemon/ssh-manager.js')
     const timeoutSshManager = new SshManager(() => 'secret', async () => {
@@ -203,6 +234,26 @@ describe('SocketServer', () => {
     } finally {
       upServer.close()
     }
+  })
+
+  it('flags duplicateOf by registration order (createdAt), not by registry.list()\'s alphabetical id order', async () => {
+    // "srv-zebra" is registered first but sorts after "srv-apple" alphabetically — the
+    // alphabetically-later id must still be the one flagged as the duplicate. Date.now is
+    // stubbed so the two upserts get distinct, deterministic createdAt values regardless of
+    // how fast the test runs.
+    const nowSpy = vi.spyOn(Date, 'now')
+    nowSpy.mockReturnValueOnce(1000)
+    registry.upsert({ id: 'srv-zebra', host: '10.1.1.1', port: 22, username: 'u', authMethod: 'password' })
+    nowSpy.mockReturnValueOnce(2000)
+    registry.upsert({ id: 'srv-apple', host: '10.1.1.1', port: 22, username: 'u', authMethod: 'password' })
+    nowSpy.mockRestore()
+
+    const events = await connectAndSend({ type: 'list_status', requestId: 'req-status-order' }, 'list_status_result')
+    const result = events.find((e) => e.type === 'list_status_result')
+    const byId = Object.fromEntries(result.results.map((r: any) => [r.id, r]))
+
+    expect(byId['srv-zebra'].duplicateOf).toBeUndefined()
+    expect(byId['srv-apple'].duplicateOf).toBe('srv-zebra')
   })
 
   it('does not crash on a malformed JSON line, and later connections still work', async () => {

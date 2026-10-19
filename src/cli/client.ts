@@ -13,15 +13,19 @@ export interface ExecCommandOptions {
   onStream: (stream: 'stdout' | 'stderr', chunk: string) => void
 }
 
-/** Retries `fn` immediately (no backoff) up to `retries` additional times, only while it rejects —
- *  a resolved value (even a non-zero exit code) is never retried, since the command already ran. */
+/** Retries `fn` immediately (no backoff) up to `retries` additional times, only while it rejects
+ *  with an error marked `.retryable === true` (set only for a connection/transport failure where
+ *  the command never ran) — a resolved value (even a non-zero exit code), a timeout, or any other
+ *  rejection is never retried, since the command may already have run. A non-finite or negative
+ *  `retries` (e.g. from an unparsable `--retry` flag) is treated as 0, never as "unlimited". */
 export async function withRetry<T>(fn: () => Promise<T>, retries: number): Promise<T> {
+  const limit = Number.isFinite(retries) && retries > 0 ? Math.floor(retries) : 0
   let attempt = 0
   for (;;) {
     try {
       return await fn()
-    } catch (err) {
-      if (attempt++ >= retries) throw err
+    } catch (err: any) {
+      if (attempt++ >= limit || err?.retryable !== true) throw err
     }
   }
 }
@@ -54,13 +58,23 @@ export function execCommand(opts: ExecCommandOptions): Promise<number> {
           opts.onStream(msg.stream, msg.chunk)
         } else if (msg.type === 'done') {
           conn.end()
-          if (msg.error) reject(new Error(msg.error))
-          else resolve(msg.exitCode)
+          if (msg.error) {
+            const err: any = new Error(msg.error)
+            err.retryable = msg.retryable === true
+            reject(err)
+          } else {
+            resolve(msg.exitCode)
+          }
         }
       }
     })
 
-    conn.on('error', reject)
+    conn.on('error', (err: any) => {
+      // Failing to even reach the daemon's socket is itself a transport
+      // failure — the exec request was never sent, so it's safe to retry.
+      err.retryable = true
+      reject(err)
+    })
   })
 }
 
@@ -177,7 +191,10 @@ export async function execMany(opts: ExecManyOptions): Promise<ExecManyResult[]>
     }
   }
 
-  const workerCount = Math.max(1, Math.min(opts.parallel, opts.serverIds.length))
+  // A non-finite parallel (e.g. from an unparsable --parallel flag) falls back to 1 rather than
+  // silently producing a 0-length worker pool that would leave `results` entirely unpopulated.
+  const requested = Number.isFinite(opts.parallel) ? opts.parallel : 1
+  const workerCount = Math.max(1, Math.min(requested, opts.serverIds.length))
   await Promise.all(Array.from({ length: workerCount }, worker))
   return results
 }

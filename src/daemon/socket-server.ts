@@ -117,8 +117,11 @@ export class SocketServer {
 
     if (msg.type === 'list_status') {
       const servers = this.opts.registry.list()
+      // Group by host:port, ordered by createdAt (not registry.list()'s alphabetical-by-id
+      // order) so "duplicateOf" always points at the server that was actually registered
+      // first, regardless of what id either one happens to have.
       const idsByHostPort = new Map<string, string[]>()
-      for (const s of servers) {
+      for (const s of [...servers].sort((a, b) => a.createdAt - b.createdAt)) {
         const key = `${s.host}:${s.port}`
         const ids = idsByHostPort.get(key) ?? []
         ids.push(s.id)
@@ -172,7 +175,10 @@ export class SocketServer {
       } catch (err: any) {
         this.opts.logStore.finish(runId, null)
         const safe = err instanceof CommandTimeoutError ? err.message : sanitizeSshError(err)
-        this.send(conn, { type: 'done', requestId, exitCode: null, error: safe })
+        // A timeout or a mid-stream channel error means the command may already have run
+        // (fully or partially) — only a pre-exec connection failure is ever safe to retry.
+        const retryable = !(err instanceof CommandTimeoutError) && err?.retryable === true
+        this.send(conn, { type: 'done', requestId, exitCode: null, error: safe, retryable })
         // The dashboard needs this too — without it a run that failed to
         // connect is left streaming forever in the live view.
         this.opts.onBroadcast?.({ type: 'done', requestId, exitCode: null, error: safe, serverId: server.id, agentLabel: msg.agentLabel })

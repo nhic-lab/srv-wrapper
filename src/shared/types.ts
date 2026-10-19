@@ -114,6 +114,10 @@ export interface DoneEvent {
   requestId: string
   exitCode: number | null
   error?: string
+  /** True only for a connection/transport failure where the command never ran — the signal
+   *  the CLI's --retry uses to decide whether retrying is safe (a timeout or an exec that
+   *  already ran must never be retried blindly). Absent/false otherwise. */
+  retryable?: boolean
 }
 
 export interface SessionStartedEvent {

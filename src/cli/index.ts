@@ -10,21 +10,57 @@ program
   .name('srv')
   .description('Run commands on registered servers by id, without ever seeing host/credentials')
 
-/** `0` (or omitted) disables the timeout; otherwise converts the CLI's seconds to ms. */
+/** `0` (or omitted) disables the timeout; otherwise converts the CLI's seconds to ms. Exits with a
+ *  clear error on unparsable input rather than silently falling back to "no timeout". */
 function parseTimeoutMs(seconds: string): number | undefined {
   const n = Number(seconds)
+  if (!Number.isFinite(n) || n < 0) {
+    process.stderr.write(`srv: --timeout must be a non-negative number of seconds, got "${seconds}"\n`)
+    process.exit(1)
+  }
   return n > 0 ? n * 1000 : undefined
 }
 
-/** Prefixes every line of `chunk` with `[serverId]`, preserving whether it ends in a newline. */
-function tagChunk(serverId: string, chunk: string): string {
-  const endsWithNewline = chunk.endsWith('\n')
-  const body = endsWithNewline ? chunk.slice(0, -1) : chunk
-  const tagged = body
-    .split('\n')
-    .map((line) => `[${serverId}] ${line}`)
-    .join('\n')
-  return endsWithNewline ? tagged + '\n' : tagged
+/** Exits with a clear error on unparsable input rather than silently falling back to a default. */
+function parseNonNegativeInt(value: string, flag: string): number {
+  const n = Number(value)
+  if (!Number.isFinite(n) || n < 0 || !Number.isInteger(n)) {
+    process.stderr.write(`srv: ${flag} must be a non-negative whole number, got "${value}"\n`)
+    process.exit(1)
+  }
+  return n
+}
+
+/**
+ * Tags each server's output with `[serverId]`, buffering per (serverId, stream) pair so a chunk
+ * boundary that falls mid-line never produces a merged or mistagged line when several servers'
+ * output is interleaved on the same stdout/stderr. Call `flush()` once all servers are done to
+ * emit any trailing partial line that never got a terminating newline.
+ */
+function createLineTagger() {
+  interface Entry { serverId: string; pending: string; write: (s: string) => void }
+  const entries = new Map<string, Entry>()
+
+  function push(serverId: string, stream: 'stdout' | 'stderr', chunk: string): void {
+    const key = `${serverId}:${stream}`
+    let entry = entries.get(key)
+    if (!entry) {
+      entry = { serverId, pending: '', write: (s) => (stream === 'stdout' ? process.stdout : process.stderr).write(s) }
+      entries.set(key, entry)
+    }
+    const lines = (entry.pending + chunk).split('\n')
+    entry.pending = lines.pop() ?? ''
+    for (const line of lines) entry.write(`[${entry.serverId}] ${line}\n`)
+  }
+
+  function flush(): void {
+    for (const entry of entries.values()) {
+      if (entry.pending.length > 0) entry.write(`[${entry.serverId}] ${entry.pending}\n`)
+    }
+    entries.clear()
+  }
+
+  return { push, flush }
 }
 
 program
@@ -35,7 +71,7 @@ program
   .action(async (serverId: string, command: string, options: { agent: string; timeout: string; retry: string }) => {
     try {
       const timeoutMs = parseTimeoutMs(options.timeout)
-      const retries = Number(options.retry)
+      const retries = parseNonNegativeInt(options.retry, '--retry')
       const exitCode = await withRetry(
         () =>
           execCommand({
@@ -74,18 +110,25 @@ program
       process.exit(1)
     }
 
+    const parallel = parseNonNegativeInt(options.parallel, '--parallel')
+    if (parallel === 0) {
+      process.stderr.write('srv: --parallel must be at least 1\n')
+      process.exit(1)
+    }
+    const retries = parseNonNegativeInt(options.retry, '--retry')
+    const tagger = createLineTagger()
+
     const results = await execMany({
       socketPath: srvSocketPath(),
       serverIds,
       agentLabel: options.agent,
       command,
-      parallel: Number(options.parallel),
+      parallel,
       timeoutMs: parseTimeoutMs(options.timeout),
-      retries: Number(options.retry),
-      onStream: (serverId, stream, chunk) => {
-        (stream === 'stdout' ? process.stdout : process.stderr).write(tagChunk(serverId, chunk))
-      },
+      retries,
+      onStream: (serverId, stream, chunk) => tagger.push(serverId, stream, chunk),
     })
+    tagger.flush()
 
     let anyFailed = false
     for (const r of results) {

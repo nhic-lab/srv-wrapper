@@ -244,7 +244,15 @@ export class SshManager {
     onData: (stream: 'stdout' | 'stderr', chunk: string) => void,
     timeoutMs?: number
   ): Promise<number> {
-    const clients = await this.connectChain(server)
+    let clients: any[]
+    try {
+      clients = await this.connectChain(server)
+    } catch (err: any) {
+      // Connecting never got as far as running the command, so it's always
+      // safe for a caller's --retry to re-attempt.
+      err.retryable = true
+      throw err
+    }
     const client = clients[clients.length - 1]
 
     return new Promise((resolve, reject) => {
@@ -259,6 +267,9 @@ export class SshManager {
       }
       client.exec(command, (err: any, channel: any) => {
         if (err) {
+          // Requesting the exec channel failed outright — the command itself
+          // never started, so this is also safe to retry.
+          err.retryable = true
           settle(() => reject(err))
           return
         }

@@ -70,14 +70,20 @@ describe('withRetry', () => {
     expect(fn).toHaveBeenCalledTimes(1)
   })
 
-  it('retries up to the given count on rejection, then succeeds', async () => {
-    const fn = vi.fn().mockRejectedValueOnce(new Error('transport')).mockResolvedValueOnce('ok')
+  function retryableError(message: string): Error {
+    const err: any = new Error(message)
+    err.retryable = true
+    return err
+  }
+
+  it('retries up to the given count on a retryable rejection, then succeeds', async () => {
+    const fn = vi.fn().mockRejectedValueOnce(retryableError('transport')).mockResolvedValueOnce('ok')
     await expect(withRetry(fn, 1)).resolves.toBe('ok')
     expect(fn).toHaveBeenCalledTimes(2)
   })
 
   it('throws the last error once retries are exhausted', async () => {
-    const fn = vi.fn().mockRejectedValue(new Error('still broken'))
+    const fn = vi.fn().mockRejectedValue(retryableError('still broken'))
     await expect(withRetry(fn, 2)).rejects.toThrow('still broken')
     expect(fn).toHaveBeenCalledTimes(3)
   })
@@ -85,6 +91,18 @@ describe('withRetry', () => {
   it('never retries a resolved value, even a non-zero exit code', async () => {
     const fn = vi.fn().mockResolvedValue(1)
     await expect(withRetry(fn, 5)).resolves.toBe(1)
+    expect(fn).toHaveBeenCalledTimes(1)
+  })
+
+  it('never retries a rejection that is not marked retryable (e.g. a timeout, or a command that may have already run)', async () => {
+    const fn = vi.fn().mockRejectedValue(new Error('command timed out after 5s'))
+    await expect(withRetry(fn, 3)).rejects.toThrow('command timed out after 5s')
+    expect(fn).toHaveBeenCalledTimes(1)
+  })
+
+  it('treats a non-finite or negative retries value as 0 instead of retrying forever', async () => {
+    const fn = vi.fn().mockRejectedValue(retryableError('transport'))
+    await expect(withRetry(fn, NaN)).rejects.toThrow('transport')
     expect(fn).toHaveBeenCalledTimes(1)
   })
 })
@@ -131,13 +149,28 @@ describe('execMany', () => {
     expect(byId['srv-good'].exitCode).toBe(0)
   })
 
+  it('falls back to a single worker instead of running zero workers when parallel is not a finite number', async () => {
+    await startFakeDaemon((msg, write) => {
+      if (msg.type !== 'exec') return
+      write({ type: 'done', requestId: msg.requestId, exitCode: 0 })
+    })
+
+    const results = await execMany({
+      socketPath, serverIds: ['srv-a1', 'srv-b2'], agentLabel: 'claude-a', command: 'echo hi',
+      parallel: NaN, retries: 0, onStream: () => {},
+    })
+
+    expect(results).toHaveLength(2)
+    expect(results.every((r) => r.exitCode === 0)).toBe(true)
+  })
+
   it('retries a server that fails with a connection error, and succeeds on the retry', async () => {
     let attempts = 0
     await startFakeDaemon((msg, write) => {
       if (msg.type !== 'exec') return
       attempts++
       if (attempts === 1) {
-        write({ type: 'done', requestId: msg.requestId, exitCode: null, error: 'ssh error: connection refused' })
+        write({ type: 'done', requestId: msg.requestId, exitCode: null, error: 'ssh error: connection refused', retryable: true })
       } else {
         write({ type: 'done', requestId: msg.requestId, exitCode: 0 })
       }
