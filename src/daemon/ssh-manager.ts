@@ -3,9 +3,48 @@ import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import net from 'node:net'
 import type { ServerRecord } from '../shared/types.js'
 import type { Registry } from './registry.js'
 import { resolveJumpPath } from './jump-chain.js'
+
+/** Thrown by `SshManager.exec` when a command runs past its timeout. Kept
+ *  distinct from connection errors so the socket server can surface a plain
+ *  duration-based message instead of running it through sanitizeSshError. */
+export class CommandTimeoutError extends Error {
+  constructor(public readonly timeoutMs: number) {
+    super(`command timed out after ${Math.round(timeoutMs / 1000)}s`)
+    this.name = 'CommandTimeoutError'
+  }
+}
+
+/**
+ * Lightweight reachability check for `srv list --status` — a plain TCP
+ * connect, not a full SSH handshake, so it needs no credentials and is cheap
+ * enough to run against 50+ servers. Resolves on connect, rejects with the
+ * raw Node socket error (classified by sanitizeSshError before it ever
+ * reaches a client).
+ */
+export function checkReachable(host: string, port: number, timeoutMs = 3000): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection({ host, port })
+    const timer = setTimeout(() => {
+      socket.destroy()
+      const err: any = new Error('connect ETIMEDOUT')
+      err.code = 'ETIMEDOUT'
+      reject(err)
+    }, timeoutMs)
+    socket.once('connect', () => {
+      clearTimeout(timer)
+      socket.end()
+      resolve()
+    })
+    socket.once('error', (err) => {
+      clearTimeout(timer)
+      reject(err)
+    })
+  })
+}
 
 export interface HostKeyStore {
   get(serverId: string): string | undefined
@@ -195,36 +234,58 @@ export class SshManager {
     closeChainClients(clients)
   }
 
+  /**
+   * `timeoutMs`, when given, kills the command and rejects with a
+   * CommandTimeoutError if it hasn't closed its channel by then.
+   */
   async exec(
     server: ServerRecord,
     command: string,
-    onData: (stream: 'stdout' | 'stderr', chunk: string) => void
+    onData: (stream: 'stdout' | 'stderr', chunk: string) => void,
+    timeoutMs?: number
   ): Promise<number> {
-    const clients = await this.connectChain(server)
+    let clients: any[]
+    try {
+      clients = await this.connectChain(server)
+    } catch (err: any) {
+      // Connecting never got as far as running the command, so it's always
+      // safe for a caller's --retry to re-attempt.
+      err.retryable = true
+      throw err
+    }
     const client = clients[clients.length - 1]
 
     return new Promise((resolve, reject) => {
       let settled = false
+      let timer: NodeJS.Timeout | undefined
+      const settle = (fn: () => void) => {
+        if (settled) return
+        settled = true
+        if (timer) clearTimeout(timer)
+        closeChainClients(clients)
+        fn()
+      }
       client.exec(command, (err: any, channel: any) => {
         if (err) {
-          settled = true
-          closeChainClients(clients)
-          return reject(err)
+          // Requesting the exec channel failed outright — the command itself
+          // never started, so this is also safe to retry.
+          err.retryable = true
+          settle(() => reject(err))
+          return
+        }
+        // srv exec never forwards stdin, so close it immediately — otherwise
+        // a remote command that reads from stdin (e.g. `mysql` without -e)
+        // blocks forever waiting for input that will never arrive, and in a
+        // shell loop of `srv exec` calls, each child inherits the same
+        // terminal stdin, contending over it too.
+        channel.end?.()
+        if (timeoutMs) {
+          timer = setTimeout(() => settle(() => reject(new CommandTimeoutError(timeoutMs))), timeoutMs)
         }
         channel.on('data', (data: Buffer) => onData('stdout', data.toString()))
         channel.stderr.on('data', (data: Buffer) => onData('stderr', data.toString()))
-        channel.on('close', (code: number) => {
-          if (settled) return
-          settled = true
-          closeChainClients(clients)
-          resolve(code)
-        })
-        channel.on('error', (chanErr: any) => {
-          if (settled) return
-          settled = true
-          closeChainClients(clients)
-          reject(chanErr)
-        })
+        channel.on('close', (code: number) => settle(() => resolve(code)))
+        channel.on('error', (chanErr: any) => settle(() => reject(chanErr)))
       })
     })
   }
