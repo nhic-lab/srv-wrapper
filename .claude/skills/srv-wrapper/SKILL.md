@@ -19,6 +19,14 @@ srv list
 
 Prints every registered `server-id`, one per line — nothing else (no host, port, username, or credentials). Use this if you weren't given a `server-id` and need to find the right one, instead of asking the user to look it up manually.
 
+Add `--status` to also see reachability and duplicate-registration warnings:
+
+```bash
+srv list --status
+```
+
+Each line is `<id>  reachable|unreachable (reason)  [duplicate of <other-id>]`. Useful before a bulk rollout, to skip ids that are already down instead of letting `exec-many` burn a retry on them.
+
 ### One-shot command
 
 ```bash
@@ -30,6 +38,29 @@ Runs a single command and exits. Use this for the vast majority of tasks (builds
 ```bash
 srv exec srv-a1 "npm run build" --agent claude-session-refactor
 ```
+
+By default the command is killed after 120s and never retried. Override either when appropriate:
+
+```bash
+srv exec srv-a1 "long-build-step" --agent claude-session-refactor --timeout 600   # allow up to 10 min
+srv exec srv-a1 "flaky-call" --agent claude-session-refactor --retry 2            # retry on connection failure only
+```
+
+`--retry` only re-runs the command if it never actually started (a connection/transport failure) — it will not re-run a command that ran and exited non-zero, so it's safe to use even with non-idempotent commands. `exec` does not forward your own stdin to the remote command; a command that expects input from stdin will see immediate EOF rather than hang.
+
+### Running a command on multiple servers at once
+
+```bash
+srv exec-many <id1,id2,...> "<command>" --agent <your-label> --parallel 8
+```
+
+Use this instead of hand-rolling a shell loop of `srv exec` calls — it runs every server concurrently (bounded by `--parallel`, default 4), tags each output line with `[server-id]`, and gives each server its own independent `--timeout`/`--retry` budget so one hung or failing server never blocks or aborts the rest.
+
+```bash
+srv exec-many srv-a1,srv-b2,srv-c3 "systemctl restart app" --agent rollout-agent --parallel 5 --retry 1
+```
+
+It exits `0` only if every server's command exited `0`; otherwise check the per-server `[id] exited N` / `[id] failed: <reason>` lines it prints before exiting `1`.
 
 ### Persistent session
 

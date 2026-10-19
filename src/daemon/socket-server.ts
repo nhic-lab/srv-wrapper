@@ -4,14 +4,14 @@ import { randomUUID } from 'node:crypto'
 import { encodeMessage, decodeMessages } from './socket-protocol.js'
 import type { Registry } from './registry.js'
 import type { LogStore } from './logstore.js'
-import type { SshManager } from './ssh-manager.js'
-import type { DaemonEvent } from '../shared/types.js'
+import { CommandTimeoutError, checkReachable, type SshManager } from './ssh-manager.js'
+import type { DaemonEvent, ServerStatus } from '../shared/types.js'
 
 const KNOWN_SSH_ERROR_CODES: Record<string, string> = {
   ECONNREFUSED: 'connection refused',
   ETIMEDOUT: 'connection timed out',
   EHOSTUNREACH: 'host unreachable',
-  ENOTFOUND: 'host not found',
+  ENOTFOUND: 'host not found (dns)',
   ECONNRESET: 'connection reset',
 }
 
@@ -25,8 +25,26 @@ const KNOWN_SSH_ERROR_CODES: Record<string, string> = {
 export function sanitizeSshError(err: any): string {
   const code = err?.code
   if (code && KNOWN_SSH_ERROR_CODES[code]) return `ssh error: ${KNOWN_SSH_ERROR_CODES[code]}`
+  if (err?.level === 'client-authentication') return 'ssh error: authentication failed'
+  if (typeof err?.message === 'string' && /host verification failed/i.test(err.message)) {
+    return 'ssh error: host key verification failed (possible server identity change)'
+  }
   console.error('srvd: unclassified SSH error:', err)
   return 'ssh error: connection failed'
+}
+
+/** Runs `fn` over `items` with at most `concurrency` in flight at once, preserving result order. */
+async function mapWithConcurrency<T, R>(items: T[], concurrency: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = new Array(items.length)
+  let next = 0
+  async function worker() {
+    while (next < items.length) {
+      const i = next++
+      results[i] = await fn(items[i])
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) || 1 }, worker))
+  return results
 }
 
 interface SocketServerOptions {
@@ -86,12 +104,42 @@ export class SocketServer {
     })
   }
 
+  private static readonly STATUS_CHECK_CONCURRENCY = 16
+
   private async handleMessage(conn: net.Socket, msg: any): Promise<void> {
     const requestId: string = msg.requestId ?? randomUUID()
 
     if (msg.type === 'list') {
       const serverIds = this.opts.registry.list().map((s) => s.id)
       this.send(conn, { type: 'list_result', requestId, serverIds })
+      return
+    }
+
+    if (msg.type === 'list_status') {
+      const servers = this.opts.registry.list()
+      const idsByHostPort = new Map<string, string[]>()
+      for (const s of servers) {
+        const key = `${s.host}:${s.port}`
+        const ids = idsByHostPort.get(key) ?? []
+        ids.push(s.id)
+        idsByHostPort.set(key, ids)
+      }
+
+      const results: ServerStatus[] = await mapWithConcurrency(
+        servers,
+        SocketServer.STATUS_CHECK_CONCURRENCY,
+        async (server) => {
+          const group = idsByHostPort.get(`${server.host}:${server.port}`)!
+          const duplicateOf = group.length > 1 && group[0] !== server.id ? group[0] : undefined
+          try {
+            await checkReachable(server.host, server.port)
+            return { id: server.id, reachable: true, duplicateOf }
+          } catch (err) {
+            return { id: server.id, reachable: false, error: sanitizeSshError(err), duplicateOf }
+          }
+        }
+      )
+      this.send(conn, { type: 'list_status_result', requestId, results })
       return
     }
 
@@ -106,19 +154,24 @@ export class SocketServer {
       this.opts.logStore.start({ id: runId, serverId: server.id, agentLabel: msg.agentLabel, kind: 'exec', command: msg.command })
 
       try {
-        const exitCode = await this.opts.sshManager.exec(server, msg.command, (stream, chunk) => {
-          this.opts.logStore.appendOutput(runId, chunk)
-          const event: DaemonEvent & { requestId: string } = { type: 'stream', requestId, stream, chunk }
-          this.send(conn, event)
-          this.opts.onBroadcast?.({ ...event, serverId: server.id, agentLabel: msg.agentLabel, command: msg.command })
-        })
+        const exitCode = await this.opts.sshManager.exec(
+          server,
+          msg.command,
+          (stream, chunk) => {
+            this.opts.logStore.appendOutput(runId, chunk)
+            const event: DaemonEvent & { requestId: string } = { type: 'stream', requestId, stream, chunk }
+            this.send(conn, event)
+            this.opts.onBroadcast?.({ ...event, serverId: server.id, agentLabel: msg.agentLabel, command: msg.command })
+          },
+          msg.timeoutMs || undefined
+        )
         this.opts.logStore.finish(runId, exitCode)
         const done: DaemonEvent & { requestId: string } = { type: 'done', requestId, exitCode }
         this.send(conn, done)
         this.opts.onBroadcast?.({ ...done, serverId: server.id, agentLabel: msg.agentLabel })
       } catch (err: any) {
         this.opts.logStore.finish(runId, null)
-        const safe = sanitizeSshError(err)
+        const safe = err instanceof CommandTimeoutError ? err.message : sanitizeSshError(err)
         this.send(conn, { type: 'done', requestId, exitCode: null, error: safe })
         // The dashboard needs this too — without it a run that failed to
         // connect is left streaming forever in the live view.

@@ -56,6 +56,21 @@ export interface ExecRequest {
   serverId: string
   agentLabel: string
   command: string
+  /** Kill the command and report an error if it runs longer than this. Absent/0 means no timeout. */
+  timeoutMs?: number
+}
+
+export interface ListStatusRequest {
+  type: 'list_status'
+}
+
+export interface ServerStatus {
+  id: string
+  reachable: boolean
+  /** Already-sanitized classification (timeout/refused/dns/etc) — absent when reachable. */
+  error?: string
+  /** Set to the first-registered id sharing the same host:port, when this id is a later duplicate. */
+  duplicateOf?: string
 }
 
 export interface SessionStartRequest {
@@ -85,6 +100,7 @@ export type DaemonRequest =
   | SessionSendRequest
   | SessionStopRequest
   | ListRequest
+  | ListStatusRequest
 
 export interface StreamEvent {
   type: 'stream'
@@ -112,4 +128,10 @@ export interface ListResultEvent {
   serverIds: string[]
 }
 
-export type DaemonEvent = StreamEvent | DoneEvent | SessionStartedEvent | ListResultEvent
+export interface ListStatusResultEvent {
+  type: 'list_status_result'
+  requestId: string
+  results: ServerStatus[]
+}
+
+export type DaemonEvent = StreamEvent | DoneEvent | SessionStartedEvent | ListResultEvent | ListStatusResultEvent

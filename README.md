@@ -78,8 +78,14 @@ That's it — from here, point your AI agent at `srv` and it can operate the box
 # list the server ids you can talk to (ids only — no hosts)
 srv list
 
+# same, plus a reachability check and duplicate-registration warnings
+srv list --status
+
 # one-shot command
 srv exec <server-id> "<command>" --agent <label>
+
+# run a command on several servers at once
+srv exec-many <id1,id2,...> "<command>" --agent <label> --parallel 8
 
 # persistent session: state (cwd, env vars) survives across calls
 srv session start <server-id> --agent <label>   # prints a session id
@@ -88,9 +94,49 @@ srv session send <session-id> "pwd"             # still /var/www
 srv session stop <session-id>
 ```
 
-`--agent <label>` is required on every `exec` and `session start`. It is how the dashboard's live view tells concurrent agents apart and how the audit log attributes each run.
+`--agent <label>` is required on every `exec`, `exec-many`, and `session start`. It is how the dashboard's live view tells concurrent agents apart and how the audit log attributes each run.
 
 Sessions auto-close after 30 minutes of inactivity, so an abandoned session never pins a connection open.
+
+### Timeouts and retries
+
+`exec` and `exec-many` both kill the remote command if it runs too long, and can retry it on a connection failure:
+
+```bash
+srv exec srv-a1 "long-running-job" --agent my-agent --timeout 600   # kill after 10 minutes
+srv exec srv-a1 "long-running-job" --agent my-agent --timeout 0     # no timeout at all
+srv exec srv-a1 "flaky-network-call" --agent my-agent --retry 2     # up to 2 extra attempts
+```
+
+- `--timeout <seconds>` — defaults to **120**. `0` disables it. On expiry the command and its SSH connection are torn down and `srv` reports `command timed out after Ns`.
+- `--retry <n>` — defaults to **0**. Retries happen immediately (no backoff) and **only** when the command never ran at all (a connection/transport failure) — a command that ran and exited non-zero is never retried, so a destructive command is never silently re-run.
+- `exec` also always closes its own stdin before the remote command starts, so a command that reads from stdin (e.g. `mysql` without `-e`) gets immediate EOF instead of hanging the whole session.
+
+### Running a command on many servers: `exec-many`
+
+```bash
+srv exec-many srv-a1,srv-b2,srv-c3 "systemctl restart app" --agent rollout --parallel 8 --retry 1
+```
+
+- `<server-ids>` is a comma-separated list of ids (spaces around commas are fine).
+- `--parallel <n>` — max number of servers to run concurrently (default **4**).
+- Output from every server streams back interleaved as it arrives, each line tagged `[server-id]`.
+- `--timeout` and `--retry` apply per server, independently — one server hanging or failing never blocks or aborts the others.
+- Exits `0` only if every server's command exited `0`; otherwise it prints a one-line summary per failing server (`[srv-c3] exited 1` or `[srv-c3] failed: ssh error: connection refused`) and exits `1`.
+
+### Checking reachability and duplicate registrations: `list --status`
+
+```bash
+srv list --status
+```
+
+For every registered id, prints whether it's currently reachable (a lightweight TCP connect — it doesn't attempt SSH auth) and, if two ids were registered against the same host:port, flags the later one as a duplicate:
+
+```
+srv-a1    reachable
+srv-b2    unreachable (ssh error: connection refused)
+srv-c3    reachable  [duplicate of srv-a1]
+```
 
 ### Use with Claude Code
 

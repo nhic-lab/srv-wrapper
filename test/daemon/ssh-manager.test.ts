@@ -24,7 +24,7 @@ vi.mock('ssh2', async () => {
   return { Client: FakeClient }
 })
 
-const { SshManager, RegistryHostKeyStore } = await import('../../src/daemon/ssh-manager.js')
+const { SshManager, RegistryHostKeyStore, CommandTimeoutError, checkReachable } = await import('../../src/daemon/ssh-manager.js')
 const { Registry } = await import('../../src/daemon/registry.js')
 type ServerRecord = import('../../src/shared/types.js').ServerRecord
 
@@ -138,6 +138,65 @@ describe('SshManager', () => {
     expect(fakeClient.end).toHaveBeenCalled()
     expect(mgr.hasSession(sessionId)).toBe(false)
     expect(() => mgr.sendToSession(sessionId, 'x')).toThrow()
+  })
+
+  it('closes the exec channel\'s stdin immediately so a remote command reading stdin gets EOF instead of hanging', async () => {
+    const channel = fakeExecChannel()
+    channel.end = vi.fn()
+    const fakeClient = {
+      end: vi.fn(),
+      exec: vi.fn((_cmd: string, cb: (err: any, channel: any) => void) => {
+        cb(null, channel)
+        queueMicrotask(() => channel.emit('close', 0))
+      }),
+    }
+    const connectFn = vi.fn().mockResolvedValue(fakeClient)
+    const mgr = new SshManager(() => 'secret', connectFn as any)
+
+    await mgr.exec(server, 'cat', () => {})
+
+    expect(channel.end).toHaveBeenCalled()
+  })
+
+  it('rejects with CommandTimeoutError and tears down the connection if the command outlives timeoutMs', async () => {
+    vi.useFakeTimers()
+    try {
+      const channel = fakeExecChannel()
+      channel.end = vi.fn()
+      const fakeClient = {
+        end: vi.fn(),
+        exec: vi.fn((_cmd: string, cb: (err: any, channel: any) => void) => {
+          cb(null, channel)
+          // Never closes — simulates a hung/long-running remote command.
+        }),
+      }
+      const connectFn = vi.fn().mockResolvedValue(fakeClient)
+      const mgr = new SshManager(() => 'secret', connectFn as any)
+
+      const promise = mgr.exec(server, 'sleep 999', () => {}, 5000)
+      const assertion = expect(promise).rejects.toThrow(CommandTimeoutError)
+      await vi.advanceTimersByTimeAsync(5000)
+      await assertion
+      expect(fakeClient.end).toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('resolves normally when the command finishes before timeoutMs elapses', async () => {
+    const channel = fakeExecChannel()
+    channel.end = vi.fn()
+    const fakeClient = {
+      end: vi.fn(),
+      exec: vi.fn((_cmd: string, cb: (err: any, channel: any) => void) => {
+        cb(null, channel)
+        queueMicrotask(() => channel.emit('close', 0))
+      }),
+    }
+    const connectFn = vi.fn().mockResolvedValue(fakeClient)
+    const mgr = new SshManager(() => 'secret', connectFn as any)
+
+    await expect(mgr.exec(server, 'true', () => {}, 60000)).resolves.toBe(0)
   })
 
   it('passes HostKeyStore to connectFn for host-key verification', async () => {
@@ -338,6 +397,24 @@ describe('SshManager jump chain connecting', () => {
     expect(sessionChannel.end).toHaveBeenCalled()
     expect(clients['target-1'].end).toHaveBeenCalled()
     expect(clients['bastion-1'].end).toHaveBeenCalled()
+  })
+})
+
+describe('checkReachable', () => {
+  it('resolves when a TCP connection to host:port succeeds', async () => {
+    const net = await import('node:net')
+    const server = net.createServer((sock) => sock.end())
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const port = (server.address() as any).port
+    try {
+      await expect(checkReachable('127.0.0.1', port)).resolves.toBeUndefined()
+    } finally {
+      server.close()
+    }
+  })
+
+  it('rejects with ECONNREFUSED when nothing is listening on the port', async () => {
+    await expect(checkReachable('127.0.0.1', 1)).rejects.toMatchObject({ code: 'ECONNREFUSED' })
   })
 })
 

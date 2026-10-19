@@ -147,6 +147,64 @@ describe('SocketServer', () => {
     expect(serialized).not.toContain('10.0.0.5')
   })
 
+  it('classifies an auth failure distinctly from a generic connection failure', async () => {
+    const authError: any = new Error('All configured authentication methods failed')
+    authError.level = 'client-authentication'
+    const authFailingSshManager = new SshManager(() => 'secret', async () => { throw authError })
+    await server.stop()
+    server = new SocketServer({ socketPath, registry, logStore, sshManager: authFailingSshManager })
+    await server.start()
+
+    const events = await connectAndSend({
+      type: 'exec', serverId: 'srv-a1', agentLabel: 'test-agent', command: 'echo ok', requestId: 'req-auth',
+    })
+    const done = events.find((e) => e.type === 'done')
+    expect(done.error).toMatch(/authentication failed/i)
+  })
+
+  it('reports a command timeout with a plain duration message instead of the generic connection-failure message', async () => {
+    const { CommandTimeoutError } = await import('../../src/daemon/ssh-manager.js')
+    const timeoutSshManager = new SshManager(() => 'secret', async () => {
+      throw new CommandTimeoutError(5000)
+    })
+    await server.stop()
+    server = new SocketServer({ socketPath, registry, logStore, sshManager: timeoutSshManager })
+    await server.start()
+
+    const events = await connectAndSend({
+      type: 'exec', serverId: 'srv-a1', agentLabel: 'test-agent', command: 'sleep 999', requestId: 'req-timeout', timeoutMs: 5000,
+    })
+    const done = events.find((e) => e.type === 'done')
+    expect(done.error).toBe('command timed out after 5s')
+  })
+
+  it('handles a list_status request with reachability per id and flags same-host:port duplicates', async () => {
+    const net = await import('node:net')
+    const upServer = net.createServer((sock) => sock.end())
+    await new Promise<void>((resolve) => upServer.listen(0, '127.0.0.1', resolve))
+    const upPort = (upServer.address() as any).port
+
+    registry.upsert({ id: 'srv-up', host: '127.0.0.1', port: upPort, username: 'u', authMethod: 'password' })
+    registry.upsert({ id: 'srv-down', host: '127.0.0.1', port: 1, username: 'u', authMethod: 'password' })
+    registry.upsert({ id: 'srv-dup-a', host: '10.9.9.9', port: 2222, username: 'u', authMethod: 'password' })
+    registry.upsert({ id: 'srv-dup-b', host: '10.9.9.9', port: 2222, username: 'u', authMethod: 'password' })
+
+    try {
+      const events = await connectAndSend({ type: 'list_status', requestId: 'req-status' }, 'list_status_result')
+      const result = events.find((e) => e.type === 'list_status_result')
+      const byId = Object.fromEntries(result.results.map((r: any) => [r.id, r]))
+
+      expect(byId['srv-up'].reachable).toBe(true)
+      expect(byId['srv-down'].reachable).toBe(false)
+      expect(byId['srv-down'].error).toMatch(/connection refused/i)
+      expect(byId['srv-dup-a'].duplicateOf).toBeUndefined()
+      expect(byId['srv-dup-b'].duplicateOf).toBe('srv-dup-a')
+      expect(JSON.stringify(result)).not.toContain('10.9.9.9')
+    } finally {
+      upServer.close()
+    }
+  })
+
   it('does not crash on a malformed JSON line, and later connections still work', async () => {
     await new Promise<void>((resolve, reject) => {
       const conn = createConnection(socketPath)
