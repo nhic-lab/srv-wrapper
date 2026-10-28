@@ -621,3 +621,117 @@ describe('dashboard-server connection testing', () => {
     await new Promise<void>((resolve) => httpServer.close(() => resolve()))
   })
 })
+
+describe('dashboard-server sudo', () => {
+  const base = { id: 'srv-a1', host: 'h', port: 22, username: 'u', authMethod: 'password', secret: 'login' }
+
+  it('POST /api/servers stores a separate sudo secret under <id>:sudo and reports hasSudoSecret without echoing it', async () => {
+    const { app } = createDashboardApp({ registry, keychain, logStore })
+    const res = await request(app).post('/api/servers').send({ ...base, sudoAllowed: true, sudoSecret: 'rootpw' })
+    expect(res.status).toBe(201)
+    expect(JSON.stringify(res.body)).not.toContain('rootpw')
+    expect(secretsSet['srv-a1:sudo']).toBe('rootpw')
+    const list = await request(app).get('/api/servers')
+    expect(list.body[0]).toMatchObject({ sudoAllowed: true, hasSudoSecret: true })
+    expect(JSON.stringify(list.body)).not.toContain('rootpw')
+    expect(JSON.stringify(list.body)).not.toContain('sudoSecret')
+  })
+
+  it('POST /api/servers with sudoAllowed and no sudoSecret on a password server keeps hasSudoSecret false (login password reused)', async () => {
+    const { app } = createDashboardApp({ registry, keychain, logStore })
+    await request(app).post('/api/servers').send({ ...base, sudoAllowed: true })
+    expect(registry.get('srv-a1')).toMatchObject({ sudoAllowed: true, hasSudoSecret: false })
+    expect('srv-a1:sudo' in secretsSet).toBe(false)
+  })
+
+  it('POST /api/servers rejects key auth + sudoAllowed without a sudoSecret', async () => {
+    const { app } = createDashboardApp({ registry, keychain, logStore })
+    const res = await request(app).post('/api/servers').send({ id: 'srv-k', host: 'h', port: 22, username: 'u', authMethod: 'key', keyPath: '~/.ssh/k', sudoAllowed: true })
+    expect(res.status).toBe(400)
+    expect(res.body.error).toBe('sudoSecret is required for sudo on key-based auth')
+    expect(registry.get('srv-k')).toBeUndefined()
+  })
+
+  it('POST /api/servers rejects a non-boolean sudoAllowed and a non-string, non-null sudoSecret', async () => {
+    const { app } = createDashboardApp({ registry, keychain, logStore })
+    expect((await request(app).post('/api/servers').send({ ...base, sudoAllowed: 'yes' })).status).toBe(400)
+    expect((await request(app).post('/api/servers').send({ ...base, sudoAllowed: true, sudoSecret: 5 })).status).toBe(400)
+  })
+
+  it('editing with sudoAllowed false deletes only the :sudo entry and keeps the login secret and other fields', async () => {
+    const { app } = createDashboardApp({ registry, keychain, logStore })
+    await request(app).post('/api/servers').send({ ...base, jumpChain: [], sudoAllowed: true, sudoSecret: 'rootpw' })
+    registry.setTestResult('srv-a1', true)
+    const res = await request(app).post('/api/servers').send({ ...base, secret: '', isEdit: true, sudoAllowed: false })
+    expect(res.status).toBe(201)
+    expect(secretsSet['srv-a1']).toBe('login')
+    expect('srv-a1:sudo' in secretsSet).toBe(false)
+    expect(registry.get('srv-a1')).toMatchObject({ host: 'h', sudoAllowed: false, hasSudoSecret: false, lastTestOk: true })
+  })
+
+  it('editing with sudoSecret null deletes the :sudo entry while sudo stays allowed', async () => {
+    const { app } = createDashboardApp({ registry, keychain, logStore })
+    await request(app).post('/api/servers').send({ ...base, sudoAllowed: true, sudoSecret: 'rootpw' })
+    const res = await request(app).post('/api/servers').send({ ...base, secret: '', isEdit: true, sudoAllowed: true, sudoSecret: null })
+    expect(res.status).toBe(201)
+    expect('srv-a1:sudo' in secretsSet).toBe(false)
+    expect(registry.get('srv-a1')).toMatchObject({ sudoAllowed: true, hasSudoSecret: false })
+  })
+
+  it('editing with sudoSecret absent keeps the stored :sudo entry', async () => {
+    const { app } = createDashboardApp({ registry, keychain, logStore })
+    await request(app).post('/api/servers').send({ ...base, sudoAllowed: true, sudoSecret: 'rootpw' })
+    const res = await request(app).post('/api/servers').send({ ...base, host: 'h2', secret: '', isEdit: true, sudoAllowed: true })
+    expect(res.status).toBe(201)
+    expect(secretsSet['srv-a1:sudo']).toBe('rootpw')
+    expect(registry.get('srv-a1')).toMatchObject({ host: 'h2', sudoAllowed: true, hasSudoSecret: true })
+  })
+
+  it('editing a key-auth server to enable sudo without a stored or provided sudo secret is rejected', async () => {
+    const { app } = createDashboardApp({ registry, keychain, logStore })
+    await request(app).post('/api/servers').send({ id: 'srv-k', host: 'h', port: 22, username: 'u', authMethod: 'key', keyPath: '~/.ssh/k' })
+    const res = await request(app).post('/api/servers').send({ id: 'srv-k', host: 'h', port: 22, username: 'u', authMethod: 'key', keyPath: '~/.ssh/k', isEdit: true, sudoAllowed: true })
+    expect(res.status).toBe(400)
+    expect(registry.get('srv-k')!.sudoAllowed).toBe(false)
+  })
+
+  it('POST /api/servers restores the prior :sudo entry and flags when the Keychain write fails', async () => {
+    const { app: goodApp } = createDashboardApp({ registry, keychain, logStore })
+    await request(goodApp).post('/api/servers').send({ ...base, sudoAllowed: true, sudoSecret: 'rootpw' })
+    // call 1 = login secret re-set on edit, call 2 = the sudo secret write → fails
+    const failing = makeKeychain(secretsSet, 2)
+    const { app } = createDashboardApp({ registry, keychain: failing, logStore })
+    const res = await request(app).post('/api/servers').send({ ...base, host: 'h2', secret: '', isEdit: true, sudoAllowed: true, sudoSecret: 'newroot' })
+    expect(res.status).toBe(500)
+    expect(secretsSet['srv-a1:sudo']).toBe('rootpw')
+    expect(secretsSet['srv-a1']).toBe('login')
+    expect(registry.get('srv-a1')).toMatchObject({ host: 'h', sudoAllowed: true, hasSudoSecret: true })
+  })
+
+  it('DELETE /api/servers/:id removes the :sudo entry too', async () => {
+    const { app } = createDashboardApp({ registry, keychain, logStore })
+    await request(app).post('/api/servers').send({ ...base, sudoAllowed: true, sudoSecret: 'rootpw' })
+    await request(app).delete('/api/servers/srv-a1')
+    expect('srv-a1' in secretsSet).toBe(false)
+    expect('srv-a1:sudo' in secretsSet).toBe(false)
+  })
+
+  it('POST /api/servers/bulk accepts sudoAllowed/sudoSecret per entry and rejects key auth without one', async () => {
+    const { app } = createDashboardApp({ registry, keychain, logStore })
+    const ok = await request(app).post('/api/servers/bulk').send({ servers: [
+      { id: 'b1', host: 'h', port: 22, username: 'u', authMethod: 'password', secret: 'p', sudoAllowed: true, sudoSecret: 'r1' },
+      { id: 'b2', host: 'h', port: 22, username: 'u', authMethod: 'password', secret: 'p', sudoAllowed: true },
+      { id: 'b3', host: 'h', port: 22, username: 'u', authMethod: 'password', secret: 'p' },
+    ] })
+    expect(ok.body.succeeded).toEqual(['b1', 'b2', 'b3'])
+    expect(secretsSet['b1:sudo']).toBe('r1')
+    expect(registry.get('b1')).toMatchObject({ sudoAllowed: true, hasSudoSecret: true })
+    expect(registry.get('b2')).toMatchObject({ sudoAllowed: true, hasSudoSecret: false })
+    expect(registry.get('b3')).toMatchObject({ sudoAllowed: false, hasSudoSecret: false })
+
+    const bad = await request(app).post('/api/servers/bulk').send({ servers: [
+      { id: 'k1', host: 'h', port: 22, username: 'u', authMethod: 'key', keyPath: '~/.ssh/k', secret: '', sudoAllowed: true },
+    ] })
+    expect(bad.body.failed[0].error).toBe('sudoSecret is required for sudo on key-based auth')
+  })
+})
