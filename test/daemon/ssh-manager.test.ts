@@ -26,6 +26,7 @@ vi.mock('ssh2', async () => {
 
 const { SshManager, RegistryHostKeyStore, CommandTimeoutError, checkReachable } = await import('../../src/daemon/ssh-manager.js')
 const { Registry } = await import('../../src/daemon/registry.js')
+const { buildSudoExecCommand, SudoError } = await import('../../src/daemon/sudo.js')
 type ServerRecord = import('../../src/shared/types.js').ServerRecord
 
 const server: ServerRecord = {
@@ -510,5 +511,25 @@ describe('defaultConnect (key-based auth)', () => {
     } finally {
       realpathSpy.mockRestore()
     }
+  })
+  it('exec with sudoPassword wraps the command, writes the password to stdin then ends it, and never puts the password in the command', async () => {
+    const channel = fakeExecChannel()
+    const writes: string[] = []
+    channel.write = vi.fn((s: string) => writes.push(s))
+    channel.end = vi.fn(() => { expect(writes).toEqual(['hunter2\n']) })
+    let seenCmd = ''
+    const fakeClient = {
+      end: vi.fn(),
+      exec: vi.fn((cmd: string, cb: (err: any, channel: any) => void) => {
+        seenCmd = cmd
+        cb(null, channel)
+        queueMicrotask(() => channel.emit('close', 0))
+      }),
+    }
+    const mgr = new SshManager(() => 'login', vi.fn().mockResolvedValue(fakeClient) as any)
+    await mgr.exec(server, 'whoami', () => {}, undefined, { sudoPassword: 'hunter2' })
+    expect(seenCmd).toBe(buildSudoExecCommand('whoami'))
+    expect(seenCmd).not.toContain('hunter2')
+    expect(channel.end).toHaveBeenCalledTimes(1)
   })
 })

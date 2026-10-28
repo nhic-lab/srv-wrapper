@@ -7,6 +7,7 @@ import net from 'node:net'
 import type { ServerRecord } from '../shared/types.js'
 import type { Registry } from './registry.js'
 import { resolveJumpPath } from './jump-chain.js'
+import { buildSudoExecCommand } from './sudo.js'
 
 /** Thrown by `SshManager.exec` when a command runs past its timeout. Kept
  *  distinct from connection errors so the socket server can surface a plain
@@ -237,12 +238,18 @@ export class SshManager {
   /**
    * `timeoutMs`, when given, kills the command and rejects with a
    * CommandTimeoutError if it hasn't closed its channel by then.
+   *
+   * `opts.sudoPassword`, when given, runs the command as root: it is wrapped
+   * by buildSudoExecCommand and the password is written to the channel's
+   * stdin before stdin is closed. The password never enters the command
+   * string (remote `ps`, shell history, the audit log).
    */
   async exec(
     server: ServerRecord,
     command: string,
     onData: (stream: 'stdout' | 'stderr', chunk: string) => void,
-    timeoutMs?: number
+    timeoutMs?: number,
+    opts?: { sudoPassword?: string }
   ): Promise<number> {
     let clients: any[]
     try {
@@ -265,7 +272,8 @@ export class SshManager {
         closeChainClients(clients)
         fn()
       }
-      client.exec(command, (err: any, channel: any) => {
+      const remoteCommand = opts?.sudoPassword !== undefined ? buildSudoExecCommand(command) : command
+      client.exec(remoteCommand, (err: any, channel: any) => {
         if (err) {
           // Requesting the exec channel failed outright — the command itself
           // never started, so this is also safe to retry.
@@ -278,6 +286,7 @@ export class SshManager {
         // blocks forever waiting for input that will never arrive, and in a
         // shell loop of `srv exec` calls, each child inherits the same
         // terminal stdin, contending over it too.
+        if (opts?.sudoPassword !== undefined) channel.write(opts.sudoPassword + '\n')
         channel.end?.()
         if (timeoutMs) {
           timer = setTimeout(() => settle(() => reject(new CommandTimeoutError(timeoutMs))), timeoutMs)
