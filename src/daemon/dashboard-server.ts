@@ -8,12 +8,17 @@ import type { SshManager } from './ssh-manager.js'
 import type { ServerRecord } from '../shared/types.js'
 import { resolveJumpPath } from './jump-chain.js'
 import { sanitizeSshError } from './socket-server.js'
+import { handleShellConnection } from './shell-server.js'
 
 interface DashboardOptions {
   registry: Registry
   keychain: Keychain
   logStore: LogStore
   sshManager?: SshManager
+  /** Same resolver the socket server uses; powers "Shell as root" and "Paste password". */
+  resolveSudoSecret?: (server: ServerRecord) => string | undefined
+  /** Browser-shell idle timeout override (tests). */
+  shellIdleTimeoutMs?: number
 }
 
 interface ServerInput {
@@ -358,21 +363,41 @@ export function createDashboardApp(opts: DashboardOptions): { app: express.Expre
 
   const ALLOWED_ORIGINS = new Set(['http://127.0.0.1:4280', 'http://localhost:4280'])
 
+  const SHELL_PATH = /^\/api\/shell\/([a-zA-Z0-9._-]{1,64})$/
+
+  // Two WebSocket paths share one upgrade handler: `/api/live` (the broadcast
+  // feed) and `/api/shell/:id` (one interactive PTY per socket). Both are
+  // Origin-checked; anything else is refused at the HTTP layer.
   const attachWebSocket = (server: Server) => {
-    const wss = new WebSocketServer({
-      server,
-      path: '/api/live',
-      verifyClient: (info, cb) => {
-        if (!info.origin || !ALLOWED_ORIGINS.has(info.origin)) {
-          cb(false, 403, 'forbidden origin')
-          return
-        }
-        cb(true)
-      },
-    })
-    wss.on('connection', (ws) => {
-      wsClients.add(ws)
-      ws.on('close', () => wsClients.delete(ws))
+    const wss = new WebSocketServer({ noServer: true })
+    server.on('upgrade', (req, socket, head) => {
+      const origin = req.headers.origin
+      if (!origin || !ALLOWED_ORIGINS.has(origin)) {
+        socket.write('HTTP/1.1 403 Forbidden\r\n\r\n')
+        socket.destroy()
+        return
+      }
+      const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+      if (url.pathname === '/api/live') {
+        wss.handleUpgrade(req, socket, head, (ws) => {
+          wsClients.add(ws)
+          ws.on('close', () => wsClients.delete(ws))
+        })
+        return
+      }
+      const m = SHELL_PATH.exec(url.pathname)
+      if (m && opts.sshManager) {
+        const sshManager = opts.sshManager
+        wss.handleUpgrade(req, socket, head, (ws) => {
+          handleShellConnection(ws, m[1], url.searchParams, {
+            registry: opts.registry, logStore: opts.logStore, sshManager,
+            resolveSudoSecret: opts.resolveSudoSecret, broadcast, idleTimeoutMs: opts.shellIdleTimeoutMs,
+          })
+        })
+        return
+      }
+      socket.write('HTTP/1.1 404 Not Found\r\n\r\n')
+      socket.destroy()
     })
   }
 

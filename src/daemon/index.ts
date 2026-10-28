@@ -8,6 +8,7 @@ import { SshManager, RegistryHostKeyStore } from './ssh-manager.js'
 import { SocketServer } from './socket-server.js'
 import { createDashboardApp } from './dashboard-server.js'
 import { srvHome, srvSocketPath, srvRegistryDbPath, srvLogDbPath } from '../shared/paths.js'
+import type { ServerRecord } from '../shared/types.js'
 
 const DASHBOARD_PORT = 4280
 
@@ -36,7 +37,19 @@ async function main() {
     (serverId) => registry.get(serverId)
   )
 
-  const { app, broadcast } = createDashboardApp({ registry, keychain, logStore, sshManager })
+  // A separate `<id>:sudo` entry wins; a password-auth server falls back to
+  // its login password (what sudo usually wants); key-auth servers without a
+  // sudo entry have nothing to offer and the request is refused. Shared by the
+  // agent socket (--sudo) and the dashboard (Shell as root, Paste password).
+  const resolveSudoSecret = (server: ServerRecord): string | undefined => {
+    try {
+      return keychain.getSudoSecret(server.id)
+    } catch {
+      return server.authMethod === 'password' ? keychain.getSecret(server.id) : undefined
+    }
+  }
+
+  const { app, broadcast } = createDashboardApp({ registry, keychain, logStore, sshManager, resolveSudoSecret })
   const httpServer = http.createServer(app)
   ;(app as any).attachWebSocket(httpServer)
   httpServer.listen(DASHBOARD_PORT, '127.0.0.1', () => {
@@ -48,16 +61,7 @@ async function main() {
     registry,
     logStore,
     sshManager,
-    // A separate `<id>:sudo` entry wins; a password-auth server falls back to
-    // its login password (what sudo usually wants); key-auth servers without a
-    // sudo entry have nothing to offer and the request is refused.
-    resolveSudoSecret: (server) => {
-      try {
-        return keychain.getSudoSecret(server.id)
-      } catch {
-        return server.authMethod === 'password' ? keychain.getSecret(server.id) : undefined
-      }
-    },
+    resolveSudoSecret,
     onBroadcast: (event) => broadcast(event),
   })
   await socketServer.start()
