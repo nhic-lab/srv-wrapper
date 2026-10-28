@@ -97,7 +97,7 @@ let palRows = []
 // ---------- small helpers ----------
 
 function blankForm() {
-  return { id: '', host: '', port: '22', username: '', authMethod: 'key', secret: '', hops: [] }
+  return { id: '', host: '', port: '22', username: '', authMethod: 'key', secret: '', hops: [], sudoAllowed: false, sudoSecret: '', clearSudoSecret: false }
 }
 
 function h(str) {
@@ -339,6 +339,7 @@ function newRun(requestId, msg) {
     serverId: msg.serverId || '—',
     agentLabel: msg.agentLabel || '—',
     command: msg.command || null,
+    sudo: Boolean(msg.sudo),
     lines: [],
     open: null,
     startedAt: Date.now(),
@@ -550,9 +551,9 @@ function buildRows() {
           meta: r.done ? 'moving to history' : fmtElapsed(r.startedAt),
           live: !r.done,
           startedAt: r.startedAt,
-          badge: r.done
+          badge: `${r.sudo ? '<span class="chip sudo">sudo</span>' : ''}${r.done
             ? `<span class="chip ${b.tone}">${h(b.label)}</span>`
-            : `<span class="agent-chip" title="${h(r.agentLabel)}">${h(r.agentLabel)}</span>`,
+            : `<span class="agent-chip" title="${h(r.agentLabel)}">${h(r.agentLabel)}</span>`}`,
           pick: () => { state.selRun = r.requestId; afterPick() },
         }
       })
@@ -575,7 +576,7 @@ function buildRows() {
           title: r.serverId,
           sub: r.command || 'interactive session',
           meta: relTime(r.startedAt),
-          badge: `<span class="chip ${b.tone}">${h(b.label)}</span>`,
+          badge: `${r.sudo ? '<span class="chip sudo">sudo</span>' : ''}<span class="chip ${b.tone}">${h(b.label)}</span>`,
           pick: () => { state.selHist = r.id; localStorage.setItem('srv.selHist', r.id); afterPick() },
         }
       })
@@ -597,7 +598,7 @@ function buildRows() {
         dot: `lg ${testMeta(s.id).state}`,
         title: s.id,
         sub: `${s.username}@${s.host}:${s.port}`,
-        meta: hops ? (hops === 1 ? '1 hop' : `${hops} hops`) : 'direct',
+        meta: `${hops ? (hops === 1 ? '1 hop' : `${hops} hops`) : 'direct'}${s.sudoAllowed ? ' · sudo' : ''}`,
         badge: '',
         pick: () => {
           state.selServer = s.id
@@ -723,6 +724,7 @@ function renderDetail() {
       timeValue: fmtElapsed(run.startedAt),
       liveElapsed: !run.done ? run.startedAt : null,
       command: run.command,
+      sudo: run.sudo,
       lines: run.lines,
       live: true,
     })
@@ -750,6 +752,7 @@ function renderDetail() {
       timeValue: r.endedAt == null ? relTime(r.startedAt) : `${relTime(r.startedAt)}${duration ? ` · ${duration}` : ''}`,
       liveElapsed: null,
       command: r.command,
+      sudo: r.sudo,
       lines: cached ? historyLines(cached) : [],
       live: false,
       outputBytes: r.outputBytes,
@@ -786,6 +789,7 @@ function renderRunDetail(d) {
     <div>
       <div class="run-head">
         <span class="chip ${d.badge.tone}">${h(d.badge.label)}</span>
+        ${d.sudo ? '<span class="chip sudo">sudo</span>' : ''}
         <span class="run-id">${h(d.id)}</span>
       </div>
       <h2 class="detail-h2">${h(d.serverId)}</h2>
@@ -923,6 +927,9 @@ function syncForm(id) {
     authMethod: s.authMethod,
     secret: s.authMethod === 'key' ? (s.keyPath || '') : '',
     hops: (s.jumpChain || []).slice(),
+    sudoAllowed: Boolean(s.sudoAllowed),
+    sudoSecret: '',
+    clearSudoSecret: false,
   }
 }
 
@@ -965,6 +972,7 @@ function renderServerDetail() {
         <span class="srv-dot ${t.state}"></span>
         <h2 class="detail-h2 mono">${h(state.draft ? 'new server' : s.id)}</h2>
         <span class="chip ${t.tone}">${h(t.label)}</span>
+        ${s && s.sudoAllowed ? '<span class="chip sudo">sudo</span>' : ''}
         ${t.at ? `<span class="srv-checked">checked ${h(relTime(t.at))}</span>` : ''}
         ${state.draft ? '' : `<button type="button" class="btn-plain" id="srv-test"${t.state === 'testing' ? ' disabled' : ''}>${t.state === 'testing' ? 'Testing…' : 'Test'}</button>`}
         ${state.draft
@@ -1034,6 +1042,7 @@ function renderServerDetail() {
                 placeholder="${isKey ? '~/.ssh/id_ed25519' : '••••••••'}" autocomplete="${isKey ? 'off' : 'new-password'}" spellcheck="false" />
             </label>
           </div>
+          <div id="sudo-block"></div>
 
           <div class="hops-head">
             <span class="section-label">Via jump hosts</span>
@@ -1065,8 +1074,46 @@ function renderServerDetail() {
     </div>`
 
   renderHops()
+  renderSudoBlock()
   renderServerRuns()
   wireServerDetail()
+}
+
+/**
+ * The sudo switch and its password field. Rendered on its own (like hops) so
+ * toggling never rebuilds the whole card. The password is only needed when it
+ * differs from the login password; key-auth servers have no login password, so
+ * there it is required unless one is already stored.
+ */
+function renderSudoBlock() {
+  const box = document.getElementById('sudo-block')
+  if (!box) return
+  const f = state.form
+  const isKey = f.authMethod === 'key'
+  const stored = !state.draft && Boolean((serverById(state.selServer) || {}).hasSudoSecret) && !f.clearSudoSecret
+  const placeholder = stored ? '•••••••• (stored)' : isKey ? 'required for private-key auth' : 'same as login password'
+  box.innerHTML = `
+    <div class="sudo-row">
+      <label class="check">
+        <input type="checkbox" id="f-sudo"${f.sudoAllowed ? ' checked' : ''} />
+        <span class="check-label">Allow sudo</span>
+      </label>
+      <span class="sudo-note">${f.sudoAllowed ? 'Agents may pass --sudo; the daemon feeds the password, never the agent.' : 'Agents passing --sudo are refused.'}</span>
+    </div>
+    ${f.sudoAllowed ? `
+    <div class="fieldrow one sudo-field">
+      <label class="field">
+        <span class="field-label">Sudo password</span>
+        <input class="input" id="f-sudo-secret" value="${h(f.sudoSecret)}" type="password" placeholder="${h(placeholder)}" autocomplete="new-password" spellcheck="false" />
+      </label>
+      ${stored && !isKey ? '<button type="button" class="btn-plain" id="f-sudo-clear">Use login password instead</button>' : ''}
+    </div>` : ''}`
+  const toggle = document.getElementById('f-sudo')
+  if (toggle) toggle.addEventListener('change', (e) => { state.form.sudoAllowed = e.target.checked; renderSudoBlock() })
+  const secret = document.getElementById('f-sudo-secret')
+  if (secret) secret.addEventListener('input', (e) => { state.form.sudoSecret = e.target.value })
+  const clear = document.getElementById('f-sudo-clear')
+  if (clear) clear.addEventListener('click', () => { state.form.clearSudoSecret = true; state.form.sudoSecret = ''; renderSudoBlock() })
 }
 
 function renderServerRuns() {
@@ -1108,7 +1155,7 @@ async function openHistoryRun(runId) {
       state.history.unshift({
         id: run.id, serverId: run.serverId, agentLabel: run.agentLabel, kind: run.kind,
         command: run.command, exitCode: run.exitCode, startedAt: run.startedAt, endedAt: run.endedAt,
-        outputBytes: run.outputBytes, truncated: run.truncated, hasOutput: (run.output || '').length > 0,
+        outputBytes: run.outputBytes, truncated: run.truncated, sudo: run.sudo, hasOutput: (run.output || '').length > 0,
       })
     } catch { /* fall through: History will just auto-select its first row */ }
   }
@@ -1186,6 +1233,7 @@ function wireServerDetail() {
       input.autocomplete = isKey ? 'off' : 'new-password'
       input.value = state.form.secret
     }
+    renderSudoBlock()
   })
 
   on('add-hop', 'click', () => {
@@ -1244,6 +1292,11 @@ function formPayload() {
   } else {
     payload.secret = f.secret
   }
+  payload.sudoAllowed = Boolean(f.sudoAllowed)
+  if (payload.sudoAllowed) {
+    if (f.sudoSecret) payload.sudoSecret = f.sudoSecret
+    else if (f.clearSudoSecret) payload.sudoSecret = null
+  }
   return payload
 }
 
@@ -1255,6 +1308,10 @@ function validateLocally(payload) {
   if (!payload.username) return 'A username is required.'
   if (payload.authMethod === 'key' && !payload.keyPath) return 'A key path is required for private-key auth.'
   if (payload.authMethod === 'password' && state.draft && !payload.secret) return 'A password is required.'
+  if (payload.sudoAllowed && payload.authMethod === 'key' && !payload.sudoSecret) {
+    const stored = !state.draft && Boolean((serverById(state.selServer) || {}).hasSudoSecret)
+    if (!stored) return 'A sudo password is required for private-key auth.'
+  }
   if (pathPreview().bad) return 'Resolve the jump-host cycle before saving.'
   return null
 }
@@ -1657,6 +1714,7 @@ function connectSocket() {
         state.live.set(msg.requestId, run)
       }
       if (!run.command && msg.command) run.command = msg.command
+      if (msg.sudo) run.sudo = true
       const ops = ingest(run, msg.stream === 'stderr' ? 'err' : 'out', msg.chunk || '')
       if (isNew) {
         if (state.view === 'live') {
