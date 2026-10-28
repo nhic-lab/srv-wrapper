@@ -411,6 +411,8 @@ function liveBadge(run) {
    endedAt is what separates the two. */
 function histBadge(r) {
   if (r.endedAt == null) return { label: 'running', tone: 'running' }
+  // A browser shell has no exit code by nature; "closed" is the honest label, not a failure.
+  if (r.kind === 'shell') return { label: 'closed', tone: 'untested' }
   if (r.exitCode === 0) return { label: 'exit 0', tone: 'ok' }
   if (r.exitCode == null) return { label: 'no exit code', tone: 'fail' }
   return { label: `exit ${r.exitCode}`, tone: 'fail' }
@@ -1237,7 +1239,10 @@ function kindLabel(r) {
 function openShell(serverId, { root }) {
   const s = serverById(serverId)
   if (!s || state.shell) return
-  if (!(window.Terminal && window.Terminal.Terminal)) { toast('Terminal assets failed to load.', 'fail'); return }
+  // xterm's UMD build exposes the class itself as `Terminal`; older builds wrapped it in a namespace.
+  const XTerm = typeof window.Terminal === 'function' ? window.Terminal : window.Terminal && window.Terminal.Terminal
+  const Fit = window.FitAddon && (typeof window.FitAddon === 'function' ? window.FitAddon : window.FitAddon.FitAddon)
+  if (!XTerm || !Fit) { toast('Terminal assets failed to load.', 'fail'); return }
   const canPaste = Boolean(s.hasSudoSecret) || s.authMethod === 'password'
   el.detailPane.scrollTop = 0
   el.detail.innerHTML = `
@@ -1255,7 +1260,7 @@ function openShell(serverId, { root }) {
     </div>`
 
   const styles = getComputedStyle(document.documentElement)
-  const term = new window.Terminal.Terminal({
+  const term = new XTerm({
     cursorBlink: true,
     fontFamily: "'JetBrains Mono', monospace",
     fontSize: 13,
@@ -1266,16 +1271,23 @@ function openShell(serverId, { root }) {
       cursor: '#E8A33D',
     },
   })
-  const fit = new window.FitAddon.FitAddon()
+  const fit = new Fit()
   term.loadAddon(fit)
   const host = document.getElementById('shell-term')
+  // The host must have a bounded height or fit() and xterm's own growth feed
+  // each other until the pane overflows: size it to the space below its top edge.
+  const sizeHost = () => {
+    const top = host.getBoundingClientRect().top
+    host.style.height = `${Math.max(280, window.innerHeight - top - 28)}px`
+  }
+  sizeHost()
   term.open(host)
   fit.fit()
 
   const proto = location.protocol === 'https:' ? 'wss' : 'ws'
   const ws = new WebSocket(`${proto}://${location.host}/api/shell/${encodeURIComponent(s.id)}?cols=${term.cols}&rows=${term.rows}${root ? '&root=1' : ''}`)
   ws.binaryType = 'arraybuffer'
-  const shell = { serverId: s.id, root, ws, term, fit, status: 'connecting', runId: null, observer: null }
+  const shell = { serverId: s.id, root, ws, term, fit, status: 'connecting', runId: null, observer: null, onWindowResize: null }
   state.shell = shell
 
   const setStatus = (status, label) => {
@@ -1306,6 +1318,8 @@ function openShell(serverId, { root }) {
     if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ t: 'resize', cols: term.cols, rows: term.rows }))
   })
   shell.observer.observe(host)
+  shell.onWindowResize = sizeHost
+  window.addEventListener('resize', sizeHost)
 
   const paste = document.getElementById('shell-paste')
   if (paste) paste.addEventListener('click', () => {
@@ -1320,6 +1334,7 @@ function closeShell() {
   if (!shell) return
   state.shell = null
   if (shell.observer) shell.observer.disconnect()
+  if (shell.onWindowResize) window.removeEventListener('resize', shell.onWindowResize)
   try { shell.ws.close(1000, 'closed by user') } catch { /* already closed */ }
   shell.term.dispose()
 }
