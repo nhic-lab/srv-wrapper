@@ -68,9 +68,16 @@ export function createSudoPrimer(token: string = randomUUID()): SudoPrimer {
     feed(chunk: string): PrimerResult {
       buffer += chunk
       let writePassword = false
-      if (!passwordSent && buffer.includes(prompt)) {
+      const firstPrompt = buffer.indexOf(prompt)
+      if (!passwordSent && firstPrompt !== -1) {
         passwordSent = true
         writePassword = true
+      }
+      // sudo re-prompts on a wrong password (passwd_tries defaults to 3) rather
+      // than exiting, so a second joined prompt is the rejection signal.
+      if (passwordSent && !writePassword && buffer.indexOf(prompt, firstPrompt + prompt.length) !== -1) {
+        buffer = ''
+        return { writePassword: false, done: { ok: false }, passthrough: '' }
       }
       const m = doneLine.exec(buffer)
       if (!m) return { writePassword, passthrough: '' }

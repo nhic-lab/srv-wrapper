@@ -734,4 +734,21 @@ describe('dashboard-server sudo', () => {
     ] })
     expect(bad.body.failed[0].error).toBe('sudoSecret is required for sudo on key-based auth')
   })
+  it('editing without a sudoAllowed field keeps the stored sudo setting and sudo secret', async () => {
+    const { app } = createDashboardApp({ registry, keychain, logStore })
+    await request(app).post('/api/servers').send({ ...base, sudoAllowed: true, sudoSecret: 'rootpw' })
+    const res = await request(app).post('/api/servers').send({ ...base, host: 'h2', secret: '', isEdit: true })
+    expect(res.status).toBe(201)
+    expect(secretsSet['srv-a1:sudo']).toBe('rootpw')
+    expect(registry.get('srv-a1')).toMatchObject({ host: 'h2', sudoAllowed: true, hasSudoSecret: true })
+  })
+
+  it('bulk re-import without a sudoAllowed field keeps the stored sudo setting and sudo secret', async () => {
+    const { app } = createDashboardApp({ registry, keychain, logStore })
+    await request(app).post('/api/servers').send({ ...base, sudoAllowed: true, sudoSecret: 'rootpw' })
+    const res = await request(app).post('/api/servers/bulk').send({ servers: [{ ...base, host: 'h3' }] })
+    expect(res.body.succeeded).toEqual(['srv-a1'])
+    expect(secretsSet['srv-a1:sudo']).toBe('rootpw')
+    expect(registry.get('srv-a1')).toMatchObject({ host: 'h3', sudoAllowed: true, hasSudoSecret: true })
+  })
 })

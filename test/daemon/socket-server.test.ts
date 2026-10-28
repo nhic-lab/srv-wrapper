@@ -472,5 +472,48 @@ describe('SocketServer', () => {
       expect(broadcasts.length).toBeGreaterThan(0)
       expect(broadcasts.every((b) => b.sudo === true)).toBe(true)
     })
+    it('session_start with sudo through the real SshManager registers the session even when the shell prompt arrives in the same chunk as the done line', async () => {
+      registry.upsert({ id: 'srv-a1', host: 'h', port: 22, username: 'u', authMethod: 'password', sudoAllowed: true })
+      const { EventEmitter } = await import('node:events')
+      const channel: any = new EventEmitter()
+      const writes: string[] = []
+      channel.write = (s: string) => {
+        writes.push(s)
+        queueMicrotask(() => {
+          if (s.startsWith('sudo -k; sudo -p')) {
+            channel.emit('data', Buffer.from(s))
+            channel.emit('data', Buffer.from(`__srv_sudo_${s.match(/__srv_sudo''_(.+?)__/)![1]}__`))
+          } else if (writes.length === 2) {
+            channel.emit('data', Buffer.from(`\r\n__srv_done_${writes[0].match(/__srv_sudo''_(.+?)__/)![1]}__0\r\nuser@host:~$ `))
+          }
+        })
+      }
+      channel.end = () => channel.emit('close')
+      const mgr = new SshManager(() => 'secret', async () => ({ end: () => {}, shell: (cb: any) => cb(null, channel) }))
+      await server.stop()
+      server = new SocketServer({ socketPath, registry, logStore, sshManager: mgr, resolveSudoSecret: () => 'rootpw' })
+      await server.start()
+
+      const events = await connectAndSend({ type: 'session_start', requestId: 'r', serverId: 'srv-a1', agentLabel: 'a', sudo: true }, 'session_started')
+      const sessionId = events.find((e) => e.type === 'session_started')?.sessionId
+      expect(typeof sessionId).toBe('string')
+      expect(writes[1]).toBe('rootpw\n')
+      const run = logStore.list()[0]
+      expect(logStore.get(run.id)!.output).toBe('user@host:~$ ')
+      expect(logStore.get(run.id)!.output).not.toContain('rootpw')
+      await connectAndSend({ type: 'session_stop', sessionId, requestId: 'r2' }, 'done')
+      expect(writes.at(-1)).toBe('sudo -k\n')
+    })
+
+    it('closes the run row and refuses cleanly when the sudo secret resolver throws', async () => {
+      registry.upsert({ id: 'srv-a1', host: 'h', port: 22, username: 'u', authMethod: 'password', sudoAllowed: true })
+      await rebuild(() => { throw new Error('No secret found for srv-a1 in Keychain (status 44)') })
+      const events = await connectAndSend({ type: 'exec', requestId: 'r', serverId: 'srv-a1', agentLabel: 'a', command: 'id', sudo: true })
+      expect(events.at(-1).error).toBe('sudo error: no sudo password stored for srv-a1')
+      expect(connectCalls).toBe(0)
+      const run = logStore.list()[0]
+      expect(run.endedAt).not.toBeNull()
+      expect(run.sudo).toBe(true)
+    })
   })
 })

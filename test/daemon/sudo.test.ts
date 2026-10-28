@@ -65,4 +65,11 @@ describe('createSudoPrimer', () => {
   it('uses a random token by default', () => {
     expect(createSudoPrimer().commandLine).not.toBe(createSudoPrimer().commandLine)
   })
+  it('reports done not-ok as soon as sudo prompts a second time after the password was sent (passwd_tries > 1)', () => {
+    const p = createSudoPrimer(token)
+    expect(p.feed('__srv_sudo_abc__').writePassword).toBe(true)
+    const r = p.feed('\r\nSorry, try again.\r\n__srv_sudo_abc__')
+    expect(r.writePassword).toBe(false)
+    expect(r.done).toEqual({ ok: false })
+  })
 })

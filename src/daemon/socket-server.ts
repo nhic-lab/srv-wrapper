@@ -222,14 +222,19 @@ export class SocketServer {
       const sudoOpts = typeof resolved === 'string' ? { sudoPassword: resolved } : undefined
 
       try {
-        const sessionId = await this.opts.sshManager.startSession(server, (chunk) => {
+        // `let`, not `const`: with --sudo the first real chunk (what follows the
+        // priming phase) is delivered synchronously from inside startSession,
+        // before this await has assigned the id. It must only be logged then.
+        let sessionId: string | undefined
+        sessionId = await this.opts.sshManager.startSession(server, (chunk) => {
           this.opts.logStore.appendOutput(runId, chunk)
-          const session = this.sessions.get(sessionId)
+          const session = sessionId ? this.sessions.get(sessionId) : undefined
           if (session?.pendingConn && session.pendingRequestId) {
             this.send(session.pendingConn, { type: 'stream', requestId: session.pendingRequestId, stream: 'stdout', chunk })
             this.opts.onBroadcast?.({ type: 'stream', requestId: session.pendingRequestId, stream: 'stdout', chunk, serverId: server.id, agentLabel: msg.agentLabel, ...tag })
             if (session.idleTimer) clearTimeout(session.idleTimer)
-            session.idleTimer = setTimeout(() => this.finalizePendingSend(sessionId), 300)
+            const id = sessionId as string
+            session.idleTimer = setTimeout(() => this.finalizePendingSend(id), 300)
           }
         }, sudoOpts)
 
@@ -287,7 +292,15 @@ export class SocketServer {
    */
   private resolveSudo(server: ServerRecord): string | { refusal: string } {
     if (!server.sudoAllowed) return { refusal: `sudo is not enabled for ${server.id}` }
-    const password = this.opts.resolveSudoSecret?.(server)
+    let password: string | undefined
+    try {
+      password = this.opts.resolveSudoSecret?.(server)
+    } catch (err) {
+      // e.g. a password-auth server whose login secret is missing from Keychain.
+      // The raw message may name Keychain internals; the refusal below is what the client sees.
+      console.error(`srvd: sudo secret lookup failed for ${server.id}:`, err)
+      password = undefined
+    }
     if (password === undefined) return { refusal: `sudo error: no sudo password stored for ${server.id}` }
     return password
   }
