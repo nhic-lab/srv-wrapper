@@ -23,7 +23,7 @@ export interface ServerRecord {
   hasSudoSecret?: boolean
 }
 
-export type RunKind = 'exec' | 'session'
+export type RunKind = 'exec' | 'session' | 'shell'
 
 export interface RunRecord {
   id: string
