@@ -5,7 +5,8 @@ import { encodeMessage, decodeMessages } from './socket-protocol.js'
 import type { Registry } from './registry.js'
 import type { LogStore } from './logstore.js'
 import { CommandTimeoutError, checkReachable, type SshManager } from './ssh-manager.js'
-import type { DaemonEvent, ServerStatus } from '../shared/types.js'
+import type { DaemonEvent, ServerStatus, ServerRecord } from '../shared/types.js'
+import { SudoError } from './sudo.js'
 
 const KNOWN_SSH_ERROR_CODES: Record<string, string> = {
   ECONNREFUSED: 'connection refused',
@@ -52,7 +53,13 @@ interface SocketServerOptions {
   registry: Registry
   logStore: LogStore
   sshManager: SshManager
-  onBroadcast?: (event: DaemonEvent & { requestId: string; serverId?: string; agentLabel?: string; command?: string }) => void
+  /**
+   * Resolves the sudo password for a server, or undefined when none is
+   * available. Wired by the daemon to: the `<id>:sudo` Keychain entry, else
+   * the login password for password-auth servers, else nothing.
+   */
+  resolveSudoSecret?: (server: ServerRecord) => string | undefined
+  onBroadcast?: (event: DaemonEvent & { requestId: string; serverId?: string; agentLabel?: string; command?: string; sudo?: boolean }) => void
 }
 
 export class SocketServer {
@@ -153,8 +160,17 @@ export class SocketServer {
         return
       }
 
+      const sudo = msg.sudo === true
       const runId = randomUUID()
-      this.opts.logStore.start({ id: runId, serverId: server.id, agentLabel: msg.agentLabel, kind: 'exec', command: msg.command })
+      this.opts.logStore.start({ id: runId, serverId: server.id, agentLabel: msg.agentLabel, kind: 'exec', command: msg.command, sudo })
+      const tag = sudo ? { sudo: true } : {}
+
+      const resolved = sudo ? this.resolveSudo(server) : undefined
+      if (resolved !== undefined && typeof resolved !== 'string') {
+        this.refuse(conn, requestId, runId, server, msg.agentLabel, resolved.refusal)
+        return
+      }
+      const sudoOpts = typeof resolved === 'string' ? { sudoPassword: resolved } : undefined
 
       try {
         const exitCode = await this.opts.sshManager.exec(
@@ -164,24 +180,25 @@ export class SocketServer {
             this.opts.logStore.appendOutput(runId, chunk)
             const event: DaemonEvent & { requestId: string } = { type: 'stream', requestId, stream, chunk }
             this.send(conn, event)
-            this.opts.onBroadcast?.({ ...event, serverId: server.id, agentLabel: msg.agentLabel, command: msg.command })
+            this.opts.onBroadcast?.({ ...event, serverId: server.id, agentLabel: msg.agentLabel, command: msg.command, ...tag })
           },
-          msg.timeoutMs || undefined
+          msg.timeoutMs || undefined,
+          sudoOpts
         )
         this.opts.logStore.finish(runId, exitCode)
         const done: DaemonEvent & { requestId: string } = { type: 'done', requestId, exitCode }
         this.send(conn, done)
-        this.opts.onBroadcast?.({ ...done, serverId: server.id, agentLabel: msg.agentLabel })
+        this.opts.onBroadcast?.({ ...done, serverId: server.id, agentLabel: msg.agentLabel, ...tag })
       } catch (err: any) {
         this.opts.logStore.finish(runId, null)
-        const safe = err instanceof CommandTimeoutError ? err.message : sanitizeSshError(err)
+        const safe = err instanceof CommandTimeoutError || err instanceof SudoError ? err.message : sanitizeSshError(err)
         // A timeout or a mid-stream channel error means the command may already have run
         // (fully or partially) — only a pre-exec connection failure is ever safe to retry.
         const retryable = !(err instanceof CommandTimeoutError) && err?.retryable === true
         this.send(conn, { type: 'done', requestId, exitCode: null, error: safe, retryable })
         // The dashboard needs this too — without it a run that failed to
         // connect is left streaming forever in the live view.
-        this.opts.onBroadcast?.({ type: 'done', requestId, exitCode: null, error: safe, serverId: server.id, agentLabel: msg.agentLabel })
+        this.opts.onBroadcast?.({ type: 'done', requestId, exitCode: null, error: safe, serverId: server.id, agentLabel: msg.agentLabel, ...tag })
       }
       return
     }
@@ -192,8 +209,17 @@ export class SocketServer {
         this.send(conn, { type: 'done', requestId, exitCode: null, error: `unknown server: ${msg.serverId}` })
         return
       }
+      const sudo = msg.sudo === true
       const runId = randomUUID()
-      this.opts.logStore.start({ id: runId, serverId: server.id, agentLabel: msg.agentLabel, kind: 'session', command: null })
+      this.opts.logStore.start({ id: runId, serverId: server.id, agentLabel: msg.agentLabel, kind: 'session', command: null, sudo })
+      const tag = sudo ? { sudo: true } : {}
+
+      const resolved = sudo ? this.resolveSudo(server) : undefined
+      if (resolved !== undefined && typeof resolved !== 'string') {
+        this.refuse(conn, requestId, runId, server, msg.agentLabel, resolved.refusal)
+        return
+      }
+      const sudoOpts = typeof resolved === 'string' ? { sudoPassword: resolved } : undefined
 
       try {
         const sessionId = await this.opts.sshManager.startSession(server, (chunk) => {
@@ -201,11 +227,11 @@ export class SocketServer {
           const session = this.sessions.get(sessionId)
           if (session?.pendingConn && session.pendingRequestId) {
             this.send(session.pendingConn, { type: 'stream', requestId: session.pendingRequestId, stream: 'stdout', chunk })
-            this.opts.onBroadcast?.({ type: 'stream', requestId: session.pendingRequestId, stream: 'stdout', chunk, serverId: server.id, agentLabel: msg.agentLabel })
+            this.opts.onBroadcast?.({ type: 'stream', requestId: session.pendingRequestId, stream: 'stdout', chunk, serverId: server.id, agentLabel: msg.agentLabel, ...tag })
             if (session.idleTimer) clearTimeout(session.idleTimer)
             session.idleTimer = setTimeout(() => this.finalizePendingSend(sessionId), 300)
           }
-        })
+        }, sudoOpts)
 
         this.sessions.set(sessionId, {
           serverId: server.id, agentLabel: msg.agentLabel, runId,
@@ -215,7 +241,7 @@ export class SocketServer {
         this.send(conn, { type: 'session_started', requestId, sessionId })
       } catch (err: any) {
         this.opts.logStore.finish(runId, null)
-        this.send(conn, { type: 'done', requestId, exitCode: null, error: sanitizeSshError(err) })
+        this.send(conn, { type: 'done', requestId, exitCode: null, error: err instanceof SudoError ? err.message : sanitizeSshError(err) })
       }
       return
     }
@@ -253,6 +279,24 @@ export class SocketServer {
     }
 
     this.send(conn, { type: 'done', requestId, exitCode: null, error: `unsupported request type: ${msg.type}` })
+  }
+
+  /**
+   * The sudo gate. Both refusals happen before any SSH connection is made, and
+   * the caller records them in the audit log so the history shows who tried.
+   */
+  private resolveSudo(server: ServerRecord): string | { refusal: string } {
+    if (!server.sudoAllowed) return { refusal: `sudo is not enabled for ${server.id}` }
+    const password = this.opts.resolveSudoSecret?.(server)
+    if (password === undefined) return { refusal: `sudo error: no sudo password stored for ${server.id}` }
+    return password
+  }
+
+  private refuse(conn: net.Socket, requestId: string, runId: string, server: ServerRecord, agentLabel: string, refusal: string): void {
+    this.opts.logStore.appendOutput(runId, refusal + '\n')
+    this.opts.logStore.finish(runId, null)
+    this.send(conn, { type: 'done', requestId, exitCode: null, error: refusal })
+    this.opts.onBroadcast?.({ type: 'done', requestId, exitCode: null, error: refusal, serverId: server.id, agentLabel, sudo: true })
   }
 
   private scheduleSessionTimeout(sessionId: string): NodeJS.Timeout {

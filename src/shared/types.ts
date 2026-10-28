@@ -66,6 +66,8 @@ export interface ExecRequest {
   command: string
   /** Kill the command and report an error if it runs longer than this. Absent/0 means no timeout. */
   timeoutMs?: number
+  /** Run as root via the daemon-fed sudo path. Refused unless the server has sudoAllowed. */
+  sudo?: boolean
 }
 
 export interface ListStatusRequest {
@@ -85,6 +87,8 @@ export interface SessionStartRequest {
   type: 'session_start'
   serverId: string
   agentLabel: string
+  /** Prime sudo's timestamp cache in the new shell. Refused unless the server has sudoAllowed. */
+  sudo?: boolean
 }
 
 export interface SessionSendRequest {
