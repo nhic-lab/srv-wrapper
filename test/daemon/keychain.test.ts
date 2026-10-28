@@ -51,4 +51,28 @@ describe('Keychain', () => {
     expect(args).toContain('delete-generic-password')
     expect(args).toContain('srv-a1')
   })
+  it('setSudoSecret stores under the "<id>:sudo" account, independent of the login entry', () => {
+    const runs: string[][] = []
+    const kc = new Keychain('/usr/local/bin/srvd', (cmd, args) => { runs.push([cmd, ...args]); return { stdout: '', status: 0 } })
+    kc.setSudoSecret('srv-a1', 'rootpw')
+    expect(runs[0]).toContain('add-generic-password')
+    expect(runs[0][runs[0].indexOf('-a') + 1]).toBe('srv-a1:sudo')
+    expect(runs[0]).toContain('rootpw')
+  })
+
+  it('getSudoSecret reads the "<id>:sudo" account and throws when absent', () => {
+    const fakeExec = vi.fn().mockReturnValueOnce({ stdout: 'rootpw\n', status: 0 }).mockReturnValueOnce({ stdout: '', status: 44 })
+    const kc = new Keychain('/usr/local/bin/srvd', fakeExec)
+    expect(kc.getSudoSecret('srv-a1')).toBe('rootpw')
+    expect(fakeExec.mock.calls[0][1] as string[]).toContain('srv-a1:sudo')
+    expect(() => kc.getSudoSecret('srv-a1')).toThrow(/sudo/)
+  })
+
+  it('deleteSudoSecret targets the "<id>:sudo" account only', () => {
+    const runs: string[][] = []
+    const kc = new Keychain('/usr/local/bin/srvd', (cmd, args) => { runs.push([cmd, ...args]); return { stdout: '', status: 0 } })
+    kc.deleteSudoSecret('srv-a1')
+    expect(runs[0]).toContain('delete-generic-password')
+    expect(runs[0][runs[0].indexOf('-a') + 1]).toBe('srv-a1:sudo')
+  })
 })
