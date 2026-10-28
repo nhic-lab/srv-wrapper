@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import type { ServerRecord } from '../shared/types.js'
 
 /**
  * Raised by the sudo paths in SshManager. Carries no host information, so the
@@ -86,4 +87,42 @@ export function createSudoPrimer(token: string = randomUUID()): SudoPrimer {
       return { writePassword, done: { ok: m[1] === '0' }, passthrough }
     },
   }
+}
+
+/**
+ * The sudo gate, shared by the agent socket and the browser shell. Both
+ * refusals happen before any SSH connection is made; callers record them in
+ * the audit log so the history shows who tried.
+ */
+export function gateSudo(
+  server: ServerRecord,
+  resolve: ((server: ServerRecord) => string | undefined) | undefined
+): string | { refusal: string } {
+  if (!server.sudoAllowed) return { refusal: `sudo is not enabled for ${server.id}` }
+  let password: string | undefined
+  try {
+    password = resolve?.(server)
+  } catch (err) {
+    // e.g. a password-auth server whose login secret is missing from Keychain.
+    // The raw message may name Keychain internals; the refusal is what the client sees.
+    console.error(`srvd: sudo secret lookup failed for ${server.id}:`, err)
+    password = undefined
+  }
+  if (password === undefined) return { refusal: `sudo error: no sudo password stored for ${server.id}` }
+  return password
+}
+
+// CSI / OSC / single-char escape sequences, enough for prompt colouring.
+const ANSI = /\x1b\[[0-?]*[ -\/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]/g
+
+export function stripAnsi(s: string): string {
+  return s.replace(ANSI, '')
+}
+
+/** A prompt that is waiting for a secret: ends in "password…:" or "passphrase…:" with nothing after it but spaces. */
+export const PASSWORD_PROMPT = /(password|passphrase)[^\r\n]{0,80}:[ \t]*$/i
+
+/** The browser shell's paste guard. `tail` must already be ANSI-stripped. */
+export function isPasswordPrompt(tail: string): boolean {
+  return PASSWORD_PROMPT.test(tail)
 }

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { shellSingleQuote, buildSudoExecCommand, createSudoPrimer, SudoError } from '../../src/daemon/sudo.js'
+import { shellSingleQuote, buildSudoExecCommand, createSudoPrimer, SudoError, gateSudo, stripAnsi, isPasswordPrompt } from '../../src/daemon/sudo.js'
+import type { ServerRecord } from '../../src/shared/types.js'
 
 describe('shellSingleQuote / buildSudoExecCommand', () => {
   it('wraps with the leak guard and -k, and never alters the command bytes', () => {
@@ -72,4 +73,23 @@ describe('createSudoPrimer', () => {
     expect(r.writePassword).toBe(false)
     expect(r.done).toEqual({ ok: false })
   })
+})
+
+describe('isPasswordPrompt', () => {
+  it.each([
+    '[sudo] password for deploy: ', 'Password: ', "Enter passphrase for key '/home/u/.ssh/id': ",
+    '\x1b[1;32mPassword:\x1b[0m ', 'root@box password:',
+  ])('accepts %j', (s) => expect(isPasswordPrompt(stripAnsi(s))).toBe(true))
+  it.each(['$ ', 'password: x\n', 'Password:\n', 'ls -la\nuser@host:~$ ', ''])('rejects %j', (s) => expect(isPasswordPrompt(stripAnsi(s))).toBe(false))
+})
+
+describe('gateSudo', () => {
+  const srv = (o: Partial<ServerRecord>): ServerRecord => ({ id: 's', host: 'h', port: 22, username: 'u', authMethod: 'password', createdAt: 0, updatedAt: 0, ...o })
+  it('refuses when sudo is off', () => expect(gateSudo(srv({}), () => 'p')).toEqual({ refusal: 'sudo is not enabled for s' }))
+  it('refuses when nothing resolves or the resolver throws', () => {
+    expect(gateSudo(srv({ sudoAllowed: true }), () => undefined)).toEqual({ refusal: 'sudo error: no sudo password stored for s' })
+    expect(gateSudo(srv({ sudoAllowed: true }), () => { throw new Error('x') })).toEqual({ refusal: 'sudo error: no sudo password stored for s' })
+    expect(gateSudo(srv({ sudoAllowed: true }), undefined)).toEqual({ refusal: 'sudo error: no sudo password stored for s' })
+  })
+  it('returns the password otherwise', () => expect(gateSudo(srv({ sudoAllowed: true }), () => 'p')).toBe('p'))
 })
