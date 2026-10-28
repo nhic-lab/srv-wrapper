@@ -56,6 +56,9 @@ export class LogStore {
     if (!cols.some((c) => c.name === 'truncated')) {
       this.db.exec(`ALTER TABLE runs ADD COLUMN truncated INTEGER NOT NULL DEFAULT 0`)
     }
+    if (!cols.some((c) => c.name === 'sudo')) {
+      this.db.exec(`ALTER TABLE runs ADD COLUMN sudo INTEGER NOT NULL DEFAULT 0`)
+    }
 
     // Backfill sizes for rows written before output_bytes existed. This is
     // keyed off user_version rather than "did we just add the column", because
@@ -73,13 +76,13 @@ export class LogStore {
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_runs_server_started ON runs (server_id, started_at DESC)`)
   }
 
-  start(input: { id: string; serverId: string; agentLabel: string; kind: 'exec' | 'session'; command: string | null }): void {
+  start(input: { id: string; serverId: string; agentLabel: string; kind: 'exec' | 'session'; command: string | null; sudo?: boolean }): void {
     this.db
       .prepare(
-        `INSERT INTO runs (id, server_id, agent_label, kind, command, output, output_bytes, truncated, exit_code, started_at, ended_at)
-         VALUES (@id, @serverId, @agentLabel, @kind, @command, '', 0, 0, NULL, @startedAt, NULL)`
+        `INSERT INTO runs (id, server_id, agent_label, kind, command, output, output_bytes, truncated, sudo, exit_code, started_at, ended_at)
+         VALUES (@id, @serverId, @agentLabel, @kind, @command, '', 0, 0, @sudo, NULL, @startedAt, NULL)`
       )
-      .run({ ...input, startedAt: Date.now() })
+      .run({ id: input.id, serverId: input.serverId, agentLabel: input.agentLabel, kind: input.kind, command: input.command, sudo: input.sudo ? 1 : 0, startedAt: Date.now() })
   }
 
   appendOutput(id: string, chunk: string): void {
@@ -147,7 +150,7 @@ export class LogStore {
    */
   list(filter?: { serverId?: string; agentLabel?: string; limit?: number; offset?: number }): RunSummary[] {
     let query = `SELECT id, server_id, agent_label, kind, command, exit_code, started_at, ended_at,
-                        output_bytes, truncated, length(output) AS stored_chars
+                        output_bytes, truncated, sudo, length(output) AS stored_chars
                  FROM runs`
     const clauses: string[] = []
     const params: Record<string, string | number> = {}
@@ -177,6 +180,7 @@ export class LogStore {
       outputBytes: r.output_bytes,
       truncated: Boolean(r.truncated),
       hasOutput: r.stored_chars > 0,
+      sudo: Boolean(r.sudo),
     }))
   }
 
@@ -204,6 +208,7 @@ export class LogStore {
       endedAt: row.ended_at,
       outputBytes: row.output_bytes ?? row.output?.length ?? 0,
       truncated: Boolean(row.truncated),
+      sudo: Boolean(row.sudo),
     }
   }
 

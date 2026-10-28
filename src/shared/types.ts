@@ -39,6 +39,8 @@ export interface RunRecord {
   outputBytes: number
   /** True when `output` is a head+tail extract rather than the whole stream. */
   truncated: boolean
+  /** True when the command ran as root via the daemon-fed sudo path. */
+  sudo: boolean
 }
 
 /** Run metadata without `output` — what the dashboard's list pane consumes. */
@@ -54,6 +56,7 @@ export interface RunSummary {
   outputBytes: number
   truncated: boolean
   hasOutput: boolean
+  sudo: boolean
 }
 
 export interface ExecRequest {
