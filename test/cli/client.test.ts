@@ -245,3 +245,39 @@ describe('session client functions', () => {
     await expect(sessionStop({ socketPath, sessionId: 'sess-123' })).resolves.toBeUndefined()
   })
 })
+
+describe('--sudo flag plumbing', () => {
+  it('execCommand sends sudo: true only when asked', async () => {
+    const seen: any[] = []
+    await startFakeDaemon((msg, write) => {
+      seen.push(msg)
+      write({ type: 'done', requestId: msg.requestId, exitCode: 0 })
+    })
+    await execCommand({ socketPath, serverId: 'srv-a1', agentLabel: 'a', command: 'id', sudo: true, onStream: () => {} })
+    await execCommand({ socketPath, serverId: 'srv-a1', agentLabel: 'a', command: 'id', onStream: () => {} })
+    expect(seen[0].sudo).toBe(true)
+    expect('sudo' in seen[1]).toBe(false)
+  })
+
+  it('execMany forwards sudo to every per-server exec request', async () => {
+    const seen: any[] = []
+    await startFakeDaemon((msg, write) => {
+      seen.push(msg)
+      write({ type: 'done', requestId: msg.requestId, exitCode: 0 })
+    })
+    await execMany({ socketPath, serverIds: ['a', 'b'], agentLabel: 'x', command: 'id', parallel: 2, retries: 0, sudo: true, onStream: () => {} })
+    expect(seen.map((m) => m.sudo)).toEqual([true, true])
+  })
+
+  it('sessionStart sends sudo: true only when asked', async () => {
+    const seen: any[] = []
+    await startFakeDaemon((msg, write) => {
+      seen.push(msg)
+      write({ type: 'session_started', requestId: msg.requestId, sessionId: 's' })
+    })
+    await sessionStart({ socketPath, serverId: 'srv-a1', agentLabel: 'a', sudo: true })
+    await sessionStart({ socketPath, serverId: 'srv-a1', agentLabel: 'a' })
+    expect(seen[0].sudo).toBe(true)
+    expect('sudo' in seen[1]).toBe(false)
+  })
+})

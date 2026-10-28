@@ -10,6 +10,8 @@ export interface ExecCommandOptions {
   command: string
   /** Kill the command and reject if it runs longer than this. Absent/0 means no timeout. */
   timeoutMs?: number
+  /** Ask the daemon to run the command as root via sudo (refused unless enabled for the server). */
+  sudo?: boolean
   onStream: (stream: 'stdout' | 'stderr', chunk: string) => void
 }
 
@@ -45,6 +47,7 @@ export function execCommand(opts: ExecCommandOptions): Promise<number> {
           agentLabel: opts.agentLabel,
           command: opts.command,
           ...(opts.timeoutMs ? { timeoutMs: opts.timeoutMs } : {}),
+          ...(opts.sudo ? { sudo: true } : {}),
         })
       )
     })
@@ -78,13 +81,13 @@ export function execCommand(opts: ExecCommandOptions): Promise<number> {
   })
 }
 
-export function sessionStart(opts: { socketPath: string; serverId: string; agentLabel: string }): Promise<string> {
+export function sessionStart(opts: { socketPath: string; serverId: string; agentLabel: string; sudo?: boolean }): Promise<string> {
   return new Promise((resolve, reject) => {
     const requestId = randomUUID()
     const conn = net.createConnection(opts.socketPath)
     let buffer = ''
     conn.on('connect', () => {
-      conn.write(encodeMessage({ type: 'session_start', requestId, serverId: opts.serverId, agentLabel: opts.agentLabel }))
+      conn.write(encodeMessage({ type: 'session_start', requestId, serverId: opts.serverId, agentLabel: opts.agentLabel, ...(opts.sudo ? { sudo: true } : {}) }))
     })
     conn.on('data', (data) => {
       buffer += data.toString()
@@ -158,6 +161,7 @@ export interface ExecManyOptions {
   timeoutMs?: number
   /** Retries per server, on connection/transport failure only. */
   retries: number
+  sudo?: boolean
   onStream: (serverId: string, stream: 'stdout' | 'stderr', chunk: string) => void
 }
 
@@ -180,6 +184,7 @@ export async function execMany(opts: ExecManyOptions): Promise<ExecManyResult[]>
               agentLabel: opts.agentLabel,
               command: opts.command,
               timeoutMs: opts.timeoutMs,
+              sudo: opts.sudo,
               onStream: (stream, chunk) => opts.onStream(serverId, stream, chunk),
             }),
           opts.retries
