@@ -532,4 +532,86 @@ describe('defaultConnect (key-based auth)', () => {
     expect(seenCmd).not.toContain('hunter2')
     expect(channel.end).toHaveBeenCalledTimes(1)
   })
+  describe('session sudo priming', () => {
+    /** A fake PTY shell: echoes every written line back, then runs `script` to produce the rest. */
+    function fakeShell(script: (written: string, writes: string[], emit: (s: string) => void) => void) {
+      const channel = new EventEmitter() as any
+      const writes: string[] = []
+      channel.end = vi.fn()
+      channel.write = (s: string) => {
+        writes.push(s)
+        queueMicrotask(() => script(s, writes, (out) => channel.emit('data', Buffer.from(out))))
+      }
+      const fakeClient = { end: vi.fn(), shell: vi.fn((cb: any) => cb(null, channel)) }
+      return { channel, writes, fakeClient }
+    }
+    const tokenOf = (primerLine: string) => primerLine.match(/__srv_sudo''_(.+?)__/)![1]
+
+    it('writes the primer line, sends the password only after the joined prompt sentinel, hides priming output, then forwards the rest', async () => {
+      const { channel, writes, fakeClient } = fakeShell((s, all, emit) => {
+        if (s.startsWith('sudo -k; sudo -p')) {
+          emit(s)                                   // PTY echo of the split-sentinel line
+          emit(`__srv_sudo_${tokenOf(all[0])}__`)   // sudo's prompt, joined
+        } else if (all.length === 2) {
+          emit(`\r\n__srv_done_${tokenOf(all[0])}__0\r\n$ `)
+        }
+      })
+      const seen: string[] = []
+      const mgr = new SshManager(() => 'login', vi.fn().mockResolvedValue(fakeClient) as any)
+      const id = await mgr.startSession(server, (c) => seen.push(c), { sudoPassword: 'hunter2' })
+      expect(writes[1]).toBe('hunter2\n')
+      expect(seen.join('')).toBe('$ ')
+      channel.emit('data', Buffer.from('later\n'))
+      expect(seen.join('')).toBe('$ later\n')
+      mgr.stopSession(id)
+      expect(writes[2]).toBe('sudo -k\n')
+      expect(channel.end).toHaveBeenCalled()
+    })
+
+    it('never sends the password when the done sentinel arrives without a prompt (NOPASSWD box)', async () => {
+      const { writes, fakeClient } = fakeShell((s, all, emit) => {
+        if (s.startsWith('sudo -k; sudo -p')) {
+          emit(s)
+          emit(`__srv_done_${tokenOf(all[0])}__0\n`)
+        }
+      })
+      const mgr = new SshManager(() => 'login', vi.fn().mockResolvedValue(fakeClient) as any)
+      const id = await mgr.startSession(server, () => {}, { sudoPassword: 'hunter2' })
+      expect(writes).toHaveLength(1)
+      expect(mgr.hasSession(id)).toBe(true)
+    })
+
+    it('rejects with SudoError and closes every hop client when priming reports a non-zero code', async () => {
+      const { channel, fakeClient } = fakeShell((s, all, emit) => {
+        if (s.startsWith('sudo -k; sudo -p')) {
+          emit(s)
+          emit(`__srv_sudo_${tokenOf(all[0])}__`)
+        } else if (all.length === 2) {
+          emit(`Sorry, try again.\n__srv_done_${tokenOf(all[0])}__1\n`)
+        }
+      })
+      const mgr = new SshManager(() => 'login', vi.fn().mockResolvedValue(fakeClient) as any)
+      const err = await mgr.startSession(server, () => {}, { sudoPassword: 'bad' }).catch((e) => e)
+      expect(err).toBeInstanceOf(SudoError)
+      expect(err.message).toBe('sudo error: authentication failed')
+      expect(channel.end).toHaveBeenCalled()
+      expect(fakeClient.end).toHaveBeenCalled()
+    })
+
+    it('rejects with SudoError when no sentinel arrives within the priming timeout', async () => {
+      vi.useFakeTimers()
+      try {
+        const { channel, fakeClient } = fakeShell(() => {})
+        const mgr = new SshManager(() => 'login', vi.fn().mockResolvedValue(fakeClient) as any)
+        const pending = mgr.startSession(server, () => {}, { sudoPassword: 'hunter2' })
+        const outcome = expect(pending).rejects.toThrow('sudo error: timed out waiting for sudo prompt')
+        await vi.advanceTimersByTimeAsync(15_000)
+        await outcome
+        expect(channel.end).toHaveBeenCalled()
+        expect(fakeClient.end).toHaveBeenCalled()
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+  })
 })
