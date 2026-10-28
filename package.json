@@ -46,7 +46,8 @@
     "test": "vitest run",
     "dev:daemon": "tsx src/daemon/index.ts",
     "compact-log": "node scripts/compact-log.mjs",
-    "prepublishOnly": "npm run build && npm test"
+    "prepublishOnly": "npm run build && npm test",
+    "vendor": "node scripts/vendor-xterm.mjs"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.2",
@@ -62,6 +63,8 @@
     "@types/ssh2": "^1.15.5",
     "@types/supertest": "^7.2.1",
     "@types/ws": "^8.18.1",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "supertest": "^7.2.2",
     "tsx": "^4.23.1",
     "typescript": "^7.0.2",
