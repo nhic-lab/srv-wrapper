@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { Registry } from '../../src/daemon/registry.js'
+import Database from 'better-sqlite3'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -53,5 +54,39 @@ describe('Registry', () => {
     registry.upsert({ id: 'srv-a1', host: 'a', port: 22, username: 'u', authMethod: 'password' })
     registry.delete('srv-a1')
     expect(registry.get('srv-a1')).toBeUndefined()
+  })
+  it('upsert persists sudoAllowed and hasSudoSecret, defaulting both to false', () => {
+    registry.upsert({ id: 'srv-a1', host: 'h', port: 22, username: 'u', authMethod: 'password' })
+    expect(registry.get('srv-a1')!.sudoAllowed).toBe(false)
+    expect(registry.get('srv-a1')!.hasSudoSecret).toBe(false)
+    registry.upsert({ id: 'srv-a1', host: 'h', port: 22, username: 'u', authMethod: 'password', sudoAllowed: true, hasSudoSecret: true })
+    expect(registry.get('srv-a1')).toMatchObject({ sudoAllowed: true, hasSudoSecret: true })
+  })
+
+  it('upsert that omits sudoAllowed/hasSudoSecret keeps the stored values', () => {
+    registry.upsert({ id: 'srv-a1', host: 'h', port: 22, username: 'u', authMethod: 'password', sudoAllowed: true, hasSudoSecret: true })
+    registry.upsert({ id: 'srv-a1', host: 'h2', port: 22, username: 'u', authMethod: 'password' })
+    expect(registry.get('srv-a1')).toMatchObject({ host: 'h2', sudoAllowed: true, hasSudoSecret: true })
+  })
+
+  it('setSudoSecretStored flips only hasSudoSecret', () => {
+    registry.upsert({ id: 'srv-a1', host: 'h', port: 22, username: 'u', authMethod: 'password', sudoAllowed: true })
+    registry.setSudoSecretStored('srv-a1', true)
+    expect(registry.get('srv-a1')).toMatchObject({ sudoAllowed: true, hasSudoSecret: true })
+  })
+
+  it('adds the sudo columns to a database created before they existed', () => {
+    const oldPath = path.join(path.dirname(dbPath), 'old.db')
+    const db = new Database(oldPath)
+    db.exec(`CREATE TABLE servers (id TEXT PRIMARY KEY, host TEXT NOT NULL, port INTEGER NOT NULL, username TEXT NOT NULL,
+      auth_method TEXT NOT NULL, key_path TEXT, host_key_fingerprint TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`)
+    db.exec(`INSERT INTO servers VALUES ('old', 'h', 22, 'u', 'password', NULL, NULL, 1, 1)`)
+    db.close()
+    const old = new Registry(oldPath)
+    try {
+      expect(old.get('old')).toMatchObject({ sudoAllowed: false, hasSudoSecret: false })
+    } finally {
+      old.close()
+    }
   })
 })

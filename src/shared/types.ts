@@ -16,6 +16,11 @@ export interface ServerRecord {
   lastTestAt?: number
   lastTestOk?: boolean
   lastTestError?: string
+  /** Human-set switch: may an agent pass --sudo for this server. Off by default. */
+  sudoAllowed?: boolean
+  /** Whether a separate `<id>:sudo` Keychain entry exists. Mirrored in the
+   *  registry so the dashboard never has to poll Keychain per server. */
+  hasSudoSecret?: boolean
 }
 
 export type RunKind = 'exec' | 'session'
