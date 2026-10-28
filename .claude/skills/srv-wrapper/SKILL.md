@@ -103,3 +103,5 @@ srv session start srv-a1 --agent ops-agent --sudo     # later `sudo ...` sends i
 ## Everything you run is watched
 
 Every command you run through `srv` is visible live in the user's dashboard and permanently recorded in the audit history. This is expected and by design — it is not a sign you did something wrong.
+
+The user may also have a browser shell open on the same box from that dashboard. It shows up in the live view as agent `dashboard`. You don't need to do anything differently; just don't assume you are the only one on the machine.

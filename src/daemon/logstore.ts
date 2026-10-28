@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3'
-import type { RunRecord, RunSummary } from '../shared/types.js'
+import type { RunRecord, RunSummary, RunKind } from '../shared/types.js'
 
 /**
  * Stored output is capped per run: the first HEAD_CHARS and last TAIL_CHARS are
@@ -41,7 +41,7 @@ export class LogStore {
         id TEXT PRIMARY KEY,
         server_id TEXT NOT NULL,
         agent_label TEXT NOT NULL,
-        kind TEXT NOT NULL CHECK(kind IN ('exec','session')),
+        kind TEXT NOT NULL CHECK(kind IN ('exec','session','shell')),
         command TEXT,
         output TEXT NOT NULL DEFAULT '',
         exit_code INTEGER,
@@ -70,13 +70,40 @@ export class LogStore {
       this.db.exec(`UPDATE runs SET output_bytes = length(output) WHERE output_bytes = 0 AND length(output) > 0`)
       this.db.pragma('user_version = 1')
     }
+    // Browser shells added a third `kind`. SQLite cannot change a CHECK in
+    // place, so a database created before it is rebuilt once, rows copied.
+    if (schemaVersion < 2) {
+      this.db.transaction(() => {
+        this.db.exec(`
+          CREATE TABLE runs_new (
+            id TEXT PRIMARY KEY,
+            server_id TEXT NOT NULL,
+            agent_label TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK(kind IN ('exec','session','shell')),
+            command TEXT,
+            output TEXT NOT NULL DEFAULT '',
+            exit_code INTEGER,
+            started_at INTEGER NOT NULL,
+            ended_at INTEGER,
+            output_bytes INTEGER NOT NULL DEFAULT 0,
+            truncated INTEGER NOT NULL DEFAULT 0,
+            sudo INTEGER NOT NULL DEFAULT 0
+          );
+          INSERT INTO runs_new (id, server_id, agent_label, kind, command, output, exit_code, started_at, ended_at, output_bytes, truncated, sudo)
+            SELECT id, server_id, agent_label, kind, command, output, exit_code, started_at, ended_at, output_bytes, truncated, sudo FROM runs;
+          DROP TABLE runs;
+          ALTER TABLE runs_new RENAME TO runs;
+        `)
+        this.db.pragma('user_version = 2')
+      })()
+    }
     // History is always read newest-first, and always filtered by server id on
     // the server-detail pane; without this every read was a full table scan.
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_runs_started_at ON runs (started_at DESC)`)
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_runs_server_started ON runs (server_id, started_at DESC)`)
   }
 
-  start(input: { id: string; serverId: string; agentLabel: string; kind: 'exec' | 'session'; command: string | null; sudo?: boolean }): void {
+  start(input: { id: string; serverId: string; agentLabel: string; kind: RunKind; command: string | null; sudo?: boolean }): void {
     this.db
       .prepare(
         `INSERT INTO runs (id, server_id, agent_label, kind, command, output, output_bytes, truncated, sudo, exit_code, started_at, ended_at)

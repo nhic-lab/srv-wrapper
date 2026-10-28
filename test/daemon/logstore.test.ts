@@ -115,8 +115,8 @@ describe('LogStore', () => {
     const reopened = new LogStore(dbPath)
     try {
       expect(reopened.list().find((r) => r.id === 'old-1')?.outputBytes).toBe(12)
-      // and it must not run twice / clobber live values
-      expect(reopened['db'].pragma('user_version', { simple: true })).toBe(1)
+      // and it must not run twice / clobber live values (2 = the latest schema step)
+      expect(reopened['db'].pragma('user_version', { simple: true })).toBe(2)
     } finally {
       reopened.close()
       store = new LogStore(dbPath) // so afterEach can close something valid
@@ -149,6 +149,35 @@ describe('LogStore', () => {
     const reopened = new LogStore(dbPath)
     try {
       expect(reopened.get('old-1')!.sudo).toBe(false)
+    } finally {
+      reopened.close()
+      store = new LogStore(dbPath)
+    }
+  })
+  it('accepts kind "shell"', () => {
+    store.start({ id: 's1', serverId: 's', agentLabel: 'dashboard', kind: 'shell', command: null })
+    expect(store.get('s1')!.kind).toBe('shell')
+  })
+
+  it('migrates a database whose CHECK constraint predates kind "shell", keeping rows and indexes', () => {
+    store.start({ id: 'old-1', serverId: 's', agentLabel: 'a', kind: 'exec', command: 'x' })
+    store.appendOutput('old-1', 'kept')
+    store['db'].pragma('user_version = 1')
+    store['db'].exec(`CREATE TABLE runs_old AS SELECT * FROM runs; DROP TABLE runs;
+      CREATE TABLE runs (id TEXT PRIMARY KEY, server_id TEXT NOT NULL, agent_label TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK(kind IN ('exec','session')), command TEXT, output TEXT NOT NULL DEFAULT '',
+        exit_code INTEGER, started_at INTEGER NOT NULL, ended_at INTEGER,
+        output_bytes INTEGER NOT NULL DEFAULT 0, truncated INTEGER NOT NULL DEFAULT 0, sudo INTEGER NOT NULL DEFAULT 0);
+      INSERT INTO runs SELECT id, server_id, agent_label, kind, command, output, exit_code, started_at, ended_at, output_bytes, truncated, sudo FROM runs_old;
+      DROP TABLE runs_old;`)
+    store.close()
+    const reopened = new LogStore(dbPath)
+    try {
+      expect(reopened.get('old-1')).toMatchObject({ output: 'kept', kind: 'exec' })
+      expect(() => reopened.start({ id: 's1', serverId: 's', agentLabel: 'dashboard', kind: 'shell', command: null })).not.toThrow()
+      expect(reopened['db'].pragma('user_version', { simple: true })).toBe(2)
+      const idx = reopened['db'].prepare(`SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='runs'`).all().map((r: any) => r.name)
+      expect(idx).toEqual(expect.arrayContaining(['idx_runs_started_at', 'idx_runs_server_started']))
     } finally {
       reopened.close()
       store = new LogStore(dbPath)

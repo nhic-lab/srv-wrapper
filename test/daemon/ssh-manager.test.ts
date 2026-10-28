@@ -399,6 +399,25 @@ describe('SshManager jump chain connecting', () => {
     expect(clients['target-1'].end).toHaveBeenCalled()
     expect(clients['bastion-1'].end).toHaveBeenCalled()
   })
+
+  it('startShell through a jump chain opens the shell on the last hop only and unwinds every hop on close', async () => {
+    const shellChannel = fakeExecChannel()
+    shellChannel.write = vi.fn(); shellChannel.end = vi.fn(); shellChannel.setWindow = vi.fn()
+    const clients: Record<string, any> = {
+      'bastion-1': makeFakeClient('bastion-1'),
+      'target-1': { end: vi.fn(), shell: vi.fn((_opts: any, cb: (err: any, ch: any) => void) => cb(null, shellChannel)) },
+    }
+    const soloTarget: ServerRecord = { ...target, jumpChain: ['bastion-1'] }
+    const connectFn = vi.fn(async (rec: ServerRecord) => clients[rec.id])
+    const mgr = new SshManager(() => 'secret', connectFn as any, undefined, makeLookup())
+
+    const handle = await mgr.startShell(soloTarget, { cols: 80, rows: 24 }, () => {}, () => {})
+    expect(connectFn).toHaveBeenCalledTimes(2)
+    expect(clients['target-1'].shell).toHaveBeenCalledTimes(1)
+    handle.close()
+    expect(clients['target-1'].end).toHaveBeenCalled()
+    expect(clients['bastion-1'].end).toHaveBeenCalled()
+  })
 })
 
 describe('checkReachable', () => {
@@ -612,6 +631,76 @@ describe('defaultConnect (key-based auth)', () => {
       } finally {
         vi.useRealTimers()
       }
+    })
+
+    it('startShell with sudoPassword primes sudo before returning the handle and writes sudo -k on close', async () => {
+      const { channel, writes, fakeClient } = fakeShell((s, all, emit) => {
+        if (s.startsWith('sudo -k; sudo -p')) {
+          emit(s)
+          emit(`__srv_sudo_${tokenOf(all[0])}__`)
+        } else if (all.length === 2) {
+          emit(`\r\n__srv_done_${tokenOf(all[0])}__0\r\n$ `)
+        }
+      })
+      fakeClient.shell = vi.fn((_opts: any, cb: any) => cb(null, channel))
+      const seen: Buffer[] = []
+      const mgr = new SshManager(() => 'login', vi.fn().mockResolvedValue(fakeClient) as any)
+      const handle = await mgr.startShell(server, { cols: 80, rows: 24, sudoPassword: 'hunter2' }, (c) => seen.push(c), () => {})
+      expect(writes[1]).toBe('hunter2\n')
+      expect(Buffer.concat(seen).toString()).toBe('$ ')
+      handle.close()
+      expect(writes[2]).toBe('sudo -k\n')
+      expect(channel.end).toHaveBeenCalled()
+    })
+  })
+
+  describe('startShell', () => {
+    function shellSetup() {
+      const channel = fakeExecChannel()
+      channel.write = vi.fn(); channel.end = vi.fn(); channel.setWindow = vi.fn()
+      const fakeClient = { end: vi.fn(), shell: vi.fn((_opts: any, cb: (err: any, ch: any) => void) => cb(null, channel)) }
+      const mgr = new SshManager(() => 'secret', vi.fn().mockResolvedValue(fakeClient) as any)
+      return { channel, fakeClient, mgr }
+    }
+
+    it('opens a PTY with the requested size and term, forwards output as Buffers, resizes via setWindow, and closes hops', async () => {
+      const { channel, fakeClient, mgr } = shellSetup()
+      const seen: Buffer[] = []
+      const handle = await mgr.startShell(server, { cols: 120, rows: 40 }, (c) => seen.push(c), () => {})
+      expect(fakeClient.shell.mock.calls[0][0]).toEqual({ term: 'xterm-256color', cols: 120, rows: 40 })
+      const partial = Buffer.from([0xe2, 0x9c])
+      channel.emit('data', partial)
+      expect(seen[0]).toBe(partial)
+      handle.resize(100, 30)
+      expect(channel.setWindow).toHaveBeenCalledWith(30, 100, 0, 0)
+      handle.write('ls\r')
+      expect(channel.write).toHaveBeenCalledWith('ls\r')
+      handle.close()
+      expect(channel.end).toHaveBeenCalled()
+      expect(fakeClient.end).toHaveBeenCalled()
+    })
+
+    it('honours an explicit term', async () => {
+      const { fakeClient, mgr } = shellSetup()
+      await mgr.startShell(server, { cols: 1, rows: 1, term: 'vt100' }, () => {}, () => {})
+      expect(fakeClient.shell.mock.calls[0][0].term).toBe('vt100')
+    })
+
+    it('calls onClose once when the remote shell ends, and unwinds the chain', async () => {
+      const { channel, fakeClient, mgr } = shellSetup()
+      const onClose = vi.fn()
+      await mgr.startShell(server, { cols: 80, rows: 24 }, () => {}, onClose)
+      channel.emit('close')
+      channel.emit('close')
+      expect(onClose).toHaveBeenCalledTimes(1)
+      expect(fakeClient.end).toHaveBeenCalled()
+    })
+
+    it('closeAllShells closes every open shell', async () => {
+      const { channel, mgr } = shellSetup()
+      await mgr.startShell(server, { cols: 80, rows: 24 }, () => {}, () => {})
+      mgr.closeAllShells()
+      expect(channel.end).toHaveBeenCalled()
     })
   })
 })

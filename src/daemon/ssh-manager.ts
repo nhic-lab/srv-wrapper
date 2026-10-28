@@ -150,6 +150,21 @@ interface OpenSession {
   sudoPrimed: boolean
 }
 
+/** A live browser shell: raw PTY bytes both ways, no line handling. */
+export interface ShellHandle {
+  write(data: string | Buffer): void
+  resize(cols: number, rows: number): void
+  close(): void
+}
+
+export interface ShellOptions {
+  cols: number
+  rows: number
+  term?: string
+  /** Prime sudo's timestamp cache in the new shell before handing it out. */
+  sudoPassword?: string
+}
+
 function closeChainClients(clients: any[]): void {
   // Unwind in reverse: target first, back to the first hop.
   for (let i = clients.length - 1; i >= 0; i--) {
@@ -166,6 +181,7 @@ export class SshManager {
   private static readonly SUDO_PRIME_TIMEOUT_MS = 15_000
 
   private sessions = new Map<string, OpenSession>()
+  private shells = new Set<ShellHandle>()
 
   constructor(
     private secretResolver: (serverId: string) => string,
@@ -341,7 +357,13 @@ export class SshManager {
     return sessionId
   }
 
-  private primeSudo(channel: any, password: string, onData: (chunk: string) => void): Promise<void> {
+  /**
+   * `forward` (default true) attaches a string-decoding `data` listener once
+   * priming succeeds, which is what agent sessions want. The browser shell
+   * passes false and attaches its own raw-Buffer listener instead, so a
+   * multi-byte character split across chunks is not mangled by toString().
+   */
+  private primeSudo(channel: any, password: string, onData: (chunk: string) => void, forward = true): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       const primer = createSudoPrimer()
       let settled = false
@@ -364,13 +386,84 @@ export class SshManager {
           reject(new SudoError('sudo error: authentication failed'))
           return
         }
-        channel.on('data', (chunk: Buffer) => onData(chunk.toString()))
+        if (forward) channel.on('data', (chunk: Buffer) => onData(chunk.toString()))
         if (r.passthrough) onData(r.passthrough)
         resolve()
       }
       channel.on('data', onPriming)
       channel.write(primer.commandLine)
     })
+  }
+
+  /**
+   * Opens an interactive PTY for the browser shell. Unlike startSession this
+   * is a raw byte stream: no idle detection, no line handling, and `onData`
+   * receives Buffers so multi-byte sequences reach the terminal emulator
+   * intact. `onClose` fires once when the remote shell ends.
+   */
+  async startShell(
+    server: ServerRecord,
+    opts: ShellOptions,
+    onData: (chunk: Buffer) => void,
+    onClose: () => void
+  ): Promise<ShellHandle> {
+    const clients = await this.connectChain(server)
+    const client = clients[clients.length - 1]
+
+    const channel = await new Promise<any>((resolve, reject) => {
+      client.shell({ term: opts.term ?? 'xterm-256color', cols: opts.cols, rows: opts.rows }, (err: any, ch: any) => (err ? reject(err) : resolve(ch)))
+    })
+
+    let closed = false
+    const unwind = () => {
+      if (closed) return
+      closed = true
+      this.shells.delete(handle)
+      closeChainClients(clients)
+    }
+    const handle: ShellHandle = {
+      write: (data) => channel.write(data),
+      resize: (cols, rows) => channel.setWindow(rows, cols, 0, 0),
+      close: () => {
+        if (closed) return
+        if (opts.sudoPassword !== undefined) {
+          try { channel.write('sudo -k\n') } catch { /* channel already gone */ }
+        }
+        try { channel.end() } catch { /* already closed */ }
+        unwind()
+      },
+    }
+
+    if (opts.sudoPassword !== undefined) {
+      try {
+        await this.primeSudo(channel, opts.sudoPassword, (s) => onData(Buffer.from(s)), false)
+      } catch (err) {
+        try { channel.end() } catch { /* already closed */ }
+        unwind()
+        throw err
+      }
+    }
+    channel.on('data', (data: Buffer) => onData(data))
+
+    channel.on('close', () => {
+      if (closed) return
+      unwind()
+      onClose()
+    })
+    channel.on('error', (err: any) => {
+      console.error('srvd: shell channel error:', err)
+      if (closed) return
+      unwind()
+      onClose()
+    })
+
+    this.shells.add(handle)
+    return handle
+  }
+
+  /** Closes every open browser shell (daemon shutdown, tests). */
+  closeAllShells(): void {
+    for (const handle of [...this.shells]) handle.close()
   }
 
   sendToSession(sessionId: string, command: string): void {

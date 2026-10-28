@@ -6,7 +6,7 @@ import type { Registry } from './registry.js'
 import type { LogStore } from './logstore.js'
 import { CommandTimeoutError, checkReachable, type SshManager } from './ssh-manager.js'
 import type { DaemonEvent, ServerStatus, ServerRecord } from '../shared/types.js'
-import { SudoError } from './sudo.js'
+import { SudoError, gateSudo } from './sudo.js'
 
 const KNOWN_SSH_ERROR_CODES: Record<string, string> = {
   ECONNREFUSED: 'connection refused',
@@ -291,18 +291,7 @@ export class SocketServer {
    * the caller records them in the audit log so the history shows who tried.
    */
   private resolveSudo(server: ServerRecord): string | { refusal: string } {
-    if (!server.sudoAllowed) return { refusal: `sudo is not enabled for ${server.id}` }
-    let password: string | undefined
-    try {
-      password = this.opts.resolveSudoSecret?.(server)
-    } catch (err) {
-      // e.g. a password-auth server whose login secret is missing from Keychain.
-      // The raw message may name Keychain internals; the refusal below is what the client sees.
-      console.error(`srvd: sudo secret lookup failed for ${server.id}:`, err)
-      password = undefined
-    }
-    if (password === undefined) return { refusal: `sudo error: no sudo password stored for ${server.id}` }
-    return password
+    return gateSudo(server, this.opts.resolveSudoSecret)
   }
 
   private refuse(conn: net.Socket, requestId: string, runId: string, server: ServerRecord, agentLabel: string, refusal: string): void {
