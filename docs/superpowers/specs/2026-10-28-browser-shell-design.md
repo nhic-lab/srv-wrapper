@@ -16,7 +16,7 @@ Passwords never reach the browser. When a prompt on the remote asks for one (sud
 - Real PTY behaviour: colours, cursor movement, resize follows the pane, `Ctrl-C`, editors and pagers work.
 - A **Paste password** button that types the server's stored password into the shell daemon-side, only when the remote is visibly at a password prompt.
 - An **Open as root** variant on servers with "Allow sudo" on, which primes sudo right after the shell opens using the existing session primer.
-- Every shell is a run in the audit log and the Live view, with its **output** recorded under the existing 128 KB head-and-tail cap. Keystrokes are never recorded.
+- Every shell is a run in the audit log and the Live view, with its **output** recorded under the existing 128 KB head-and-tail cap. Keystroke frames are never recorded. The record is therefore the terminal **transcript** (the user's decision): echoed command lines are in it, passwords typed at real prompts (echo off) are not. Same as agent sessions today.
 - Works offline: no CDN assets.
 
 ## Non-goals
