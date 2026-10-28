@@ -451,6 +451,17 @@ a:hover { color: var(--tea-text); text-decoration: underline; }
 
 /* server detail */
 .srv-head { display: flex; align-items: center; gap: 14px; margin-bottom: 6px; flex-wrap: wrap; }
+
+/* browser shell */
+.shell-panel { display: flex; flex-direction: column; min-height: calc(100vh - 200px); }
+.shell-term {
+  flex: 1; min-height: 360px; background: var(--term-bg);
+  padding: 10px 6px 10px 12px; border: 1px solid var(--line);
+}
+.shell-term .xterm { height: 100%; }
+.shell-term .xterm-viewport::-webkit-scrollbar { width: 8px; }
+.shell-term .xterm-viewport::-webkit-scrollbar-thumb { background: #3a463e; }
+@media (max-width: 1000px) { .shell-panel { min-height: calc(100vh - 160px); } .shell-term { min-height: 280px; } }
 .srv-dot { width: 11px; height: 11px; flex: none; background: var(--line-strong); }
 .srv-dot.online { background: var(--tea-text); }
 .srv-dot.offline { background: var(--danger); }

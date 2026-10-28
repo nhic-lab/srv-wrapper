@@ -48,6 +48,7 @@ const state = {
   paletteQuery: '',
   palIndex: 0,
   toasts: [],
+  shell: null, // { serverId, root, ws, term, fit, status, runId, observer } while a browser shell is open
 }
 
 // DOM nodes that live for the whole session
@@ -181,6 +182,7 @@ function icon(paths, size = 14, extra = '') {
 }
 
 const ICON = {
+  terminal: '<polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line>',
   plus: '<path d="M5 12h14M12 5v14"></path>',
   x: '<path d="M18 6 6 18M6 6l12 12"></path>',
   copy: '<rect width="14" height="14" x="8" y="8" rx="2"></rect><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path>',
@@ -339,6 +341,7 @@ function newRun(requestId, msg) {
     serverId: msg.serverId || '—',
     agentLabel: msg.agentLabel || '—',
     command: msg.command || null,
+    kind: msg.kind || (msg.command ? 'exec' : 'session'),
     sudo: Boolean(msg.sudo),
     lines: [],
     open: null,
@@ -480,6 +483,7 @@ function renderTallies() {
 
 function switchView(view) {
   if (state.view === view) return
+  if (!leaveShell()) return
   state.view = view
   state.query = ''
   state.srvStatus = 'any'
@@ -547,7 +551,7 @@ function buildRows() {
           active: state.selRun === r.requestId,
           dot: r.done ? (b.tone === 'fail' ? 'failed' : 'ended') : 'live',
           title: r.serverId,
-          sub: r.command || 'interactive session',
+          sub: r.command || (r.kind === 'shell' ? 'browser shell' : 'interactive session'),
           meta: r.done ? 'moving to history' : fmtElapsed(r.startedAt),
           live: !r.done,
           startedAt: r.startedAt,
@@ -574,7 +578,7 @@ function buildRows() {
           active: state.selHist === r.id,
           dot: b.tone === 'ok' ? 'online' : b.tone === 'running' ? 'live' : 'offline',
           title: r.serverId,
-          sub: r.command || 'interactive session',
+          sub: r.command || (r.kind === 'shell' ? 'browser shell' : 'interactive session'),
           meta: relTime(r.startedAt),
           badge: `${r.sudo ? '<span class="chip sudo">sudo</span>' : ''}<span class="chip ${b.tone}">${h(b.label)}</span>`,
           pick: () => { state.selHist = r.id; localStorage.setItem('srv.selHist', r.id); afterPick() },
@@ -601,6 +605,7 @@ function buildRows() {
         meta: `${hops ? (hops === 1 ? '1 hop' : `${hops} hops`) : 'direct'}${s.sudoAllowed ? ' · sudo' : ''}`,
         badge: '',
         pick: () => {
+          if (state.selServer !== s.id && !leaveShell()) return
           state.selServer = s.id
           localStorage.setItem('srv.selServer', s.id)
           state.draft = false
@@ -699,6 +704,10 @@ function emptyState(title, body) {
 }
 
 function renderDetail() {
+  // An open browser shell owns the detail pane: rebuilding it would destroy
+  // the terminal. Every other re-render (test results, history refreshes)
+  // leaves it alone; navigation goes through leaveShell() first.
+  if (state.shell && state.view === 'servers' && state.selServer === state.shell.serverId && !state.draft) return
   term = { key: null, container: null, rows: [], stick: true }
   el.detailPane.scrollTop = 0
 
@@ -718,7 +727,7 @@ function renderDetail() {
         ? (run.error ? `Failed · ${run.error}` : 'Finished · kept here for 30s, then History')
         : 'Streaming from the daemon',
       agentLabel: run.agentLabel,
-      kindLabel: run.command ? 'Single exec' : 'Interactive session',
+      kindLabel: kindLabel(run),
       addr: addrOf(run.serverId),
       timeLabel: run.done ? 'Ran for' : 'Elapsed',
       timeValue: fmtElapsed(run.startedAt),
@@ -746,7 +755,7 @@ function renderDetail() {
       serverId: r.serverId,
       stampLine: `${fmtStamp(r.startedAt)}${duration ? ` · ${duration}` : ''}`,
       agentLabel: r.agentLabel,
-      kindLabel: r.kind === 'session' ? 'Interactive session' : 'Single exec',
+      kindLabel: kindLabel(r),
       addr: addrOf(r.serverId),
       timeLabel: r.endedAt == null ? 'Started' : 'Finished',
       timeValue: r.endedAt == null ? relTime(r.startedAt) : `${relTime(r.startedAt)}${duration ? ` · ${duration}` : ''}`,
@@ -975,6 +984,8 @@ function renderServerDetail() {
         ${s && s.sudoAllowed ? '<span class="chip sudo">sudo</span>' : ''}
         ${t.at ? `<span class="srv-checked">checked ${h(relTime(t.at))}</span>` : ''}
         ${state.draft ? '' : `<button type="button" class="btn-plain" id="srv-test"${t.state === 'testing' ? ' disabled' : ''}>${t.state === 'testing' ? 'Testing…' : 'Test'}</button>`}
+        ${state.draft ? '' : `<button type="button" class="btn-plain" id="srv-shell">${icon(ICON.terminal, 14)} Shell</button>`}
+        ${state.draft || !s.sudoAllowed ? '' : '<button type="button" class="btn-plain" id="srv-shell-root">Shell as root</button>'}
         ${state.draft
           ? '<button type="button" class="btn-del" id="srv-discard">Discard</button>'
           : '<button type="button" class="btn-del" id="srv-delete">Delete</button>'}
@@ -1208,6 +1219,118 @@ function updatePathPreview() {
   node.classList.toggle('bad', pp.bad)
 }
 
+function kindLabel(r) {
+  if (r.kind === 'shell') return 'Browser shell'
+  if (r.kind === 'session' || (!r.kind && !r.command)) return 'Interactive session'
+  return 'Single exec'
+}
+
+// ---------- browser shell ----------
+
+/**
+ * Opens an interactive PTY to `serverId` in the detail pane. The terminal is
+ * created once and never re-rendered; renderDetail() steps aside while
+ * state.shell points at the selected server (see its guard).
+ */
+function openShell(serverId, { root }) {
+  const s = serverById(serverId)
+  if (!s || state.shell) return
+  if (!(window.Terminal && window.Terminal.Terminal)) { toast('Terminal assets failed to load.', 'fail'); return }
+  const canPaste = Boolean(s.hasSudoSecret) || s.authMethod === 'password'
+  el.detailPane.scrollTop = 0
+  el.detail.innerHTML = `
+    <div class="shell-panel">
+      <div class="srv-head">
+        <span class="srv-dot ${testMeta(s.id).state}"></span>
+        <h2 class="detail-h2 mono">${h(s.id)}</h2>
+        <span class="chip testing" id="shell-status">connecting</span>
+        ${root ? '<span class="chip sudo">root</span>' : ''}
+        ${canPaste ? '<button type="button" class="btn-plain" id="shell-paste" title="The daemon types the stored password into the shell. Only works at a password prompt.">Paste password</button>' : ''}
+        <button type="button" class="btn-del" id="shell-close">Close</button>
+      </div>
+      <p class="detail-lead wide">Output is recorded in History as a transcript. Keystrokes are not.</p>
+      <div class="shell-term" id="shell-term"></div>
+    </div>`
+
+  const styles = getComputedStyle(document.documentElement)
+  const term = new window.Terminal.Terminal({
+    cursorBlink: true,
+    fontFamily: "'JetBrains Mono', monospace",
+    fontSize: 13,
+    scrollback: 5000,
+    theme: {
+      background: styles.getPropertyValue('--term-bg').trim() || '#17211B',
+      foreground: styles.getPropertyValue('--term-fg').trim() || '#F3F6F4',
+      cursor: '#E8A33D',
+    },
+  })
+  const fit = new window.FitAddon.FitAddon()
+  term.loadAddon(fit)
+  const host = document.getElementById('shell-term')
+  term.open(host)
+  fit.fit()
+
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws'
+  const ws = new WebSocket(`${proto}://${location.host}/api/shell/${encodeURIComponent(s.id)}?cols=${term.cols}&rows=${term.rows}${root ? '&root=1' : ''}`)
+  ws.binaryType = 'arraybuffer'
+  const shell = { serverId: s.id, root, ws, term, fit, status: 'connecting', runId: null, observer: null }
+  state.shell = shell
+
+  const setStatus = (status, label) => {
+    shell.status = status
+    const chip = document.getElementById('shell-status')
+    if (!chip) return
+    chip.textContent = label || status
+    chip.className = `chip ${status === 'live' ? 'ok' : status === 'closed' ? 'fail' : 'testing'}`
+  }
+
+  ws.onmessage = (ev) => {
+    if (ev.data instanceof ArrayBuffer) { term.write(new Uint8Array(ev.data)); return }
+    let msg
+    try { msg = JSON.parse(ev.data) } catch { return }
+    if (msg.t === 'ready') { shell.runId = msg.runId; setStatus('live'); term.focus() }
+    else if (msg.t === 'toast') toast(msg.msg, 'fail')
+    else if (msg.t === 'exit') setStatus('closed', 'shell ended')
+  }
+  ws.onclose = (ev) => {
+    if (shell.status !== 'closed') setStatus('closed', ev.reason || 'disconnected')
+    if (ev.code !== 1000 && ev.reason) toast(ev.reason, 'fail')
+  }
+  ws.onerror = () => setStatus('closed', 'connection failed')
+
+  term.onData((d) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ t: 'in', d })) })
+  shell.observer = new ResizeObserver(() => {
+    fit.fit()
+    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ t: 'resize', cols: term.cols, rows: term.rows }))
+  })
+  shell.observer.observe(host)
+
+  const paste = document.getElementById('shell-paste')
+  if (paste) paste.addEventListener('click', () => {
+    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ t: 'paste_secret' }))
+    term.focus()
+  })
+  document.getElementById('shell-close').addEventListener('click', () => { closeShell(); renderDetail() })
+}
+
+function closeShell() {
+  const shell = state.shell
+  if (!shell) return
+  state.shell = null
+  if (shell.observer) shell.observer.disconnect()
+  try { shell.ws.close(1000, 'closed by user') } catch { /* already closed */ }
+  shell.term.dispose()
+}
+
+/** Call before any navigation that would replace the detail pane. Returns false if the user kept the shell. */
+function leaveShell() {
+  const shell = state.shell
+  if (!shell) return true
+  if (shell.status === 'live' && !window.confirm(`Close the shell to ${shell.serverId}?`)) return false
+  closeShell()
+  return true
+}
+
 function wireServerDetail() {
   const on = (id, ev, fn) => {
     const node = document.getElementById(id)
@@ -1245,6 +1368,8 @@ function wireServerDetail() {
   })
 
   on('srv-test', 'click', () => testServer(state.selServer))
+  on('srv-shell', 'click', () => openShell(state.selServer, { root: false }))
+  on('srv-shell-root', 'click', () => openShell(state.selServer, { root: true }))
   on('srv-delete', 'click', () => openConfirm(state.selServer))
   on('srv-discard', 'click', discardDraft)
   on('f-cancel', 'click', discardDraft)
@@ -1263,6 +1388,7 @@ function discardDraft() {
 }
 
 function startDraft() {
+  if (!leaveShell()) return
   state.draft = true
   state.form = blankForm()
   state.formError = null
@@ -1714,6 +1840,7 @@ function connectSocket() {
         state.live.set(msg.requestId, run)
       }
       if (!run.command && msg.command) run.command = msg.command
+      if (msg.kind) run.kind = msg.kind
       if (msg.sudo) run.sudo = true
       const ops = ingest(run, msg.stream === 'stderr' ? 'err' : 'out', msg.chunk || '')
       if (isNew) {
@@ -1776,7 +1903,7 @@ document.querySelectorAll('.tab').forEach((tab) => {
   tab.addEventListener('click', () => {
     // Re-tapping the active tab returns to the list. Without this you can get
     // stranded in the detail pane on a single-column layout.
-    if (state.view === tab.dataset.view) el.app.dataset.pane = 'list'
+    if (state.view === tab.dataset.view) { if (leaveShell()) el.app.dataset.pane = 'list' }
     else switchView(tab.dataset.view)
   })
 })
@@ -1793,7 +1920,7 @@ el.loadMore.addEventListener('click', async () => {
 })
 el.testAll.addEventListener('click', testAllServers)
 el.addServer.addEventListener('click', startDraft)
-el.paneBack.addEventListener('click', () => { el.app.dataset.pane = 'list' })
+el.paneBack.addEventListener('click', () => { if (leaveShell()) el.app.dataset.pane = 'list' })
 
 el.importToggle.addEventListener('click', () => {
   state.importOpen = !state.importOpen
