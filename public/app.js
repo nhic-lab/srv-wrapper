@@ -646,7 +646,9 @@ function renderList() {
     if (!rows.some((r) => r.key === state.selRun)) state.selRun = rows.length ? rows[0].key : null
   } else if (state.view === 'history') {
     if (!rows.some((r) => r.key === state.selHist)) state.selHist = rows.length ? rows[0].key : null
-  } else if (!state.draft) {
+  } else if (!state.draft && !state.shell) {
+    // (while a shell is open the selection is pinned to it; filtering the list
+    // must not silently move it and pull the detail pane out from under the terminal)
     if (!rows.some((r) => r.key === state.selServer)) {
       state.selServer = rows.length ? rows[0].key : null
       if (state.selServer) syncForm(state.selServer)
@@ -707,7 +709,7 @@ function renderDetail() {
   // An open browser shell owns the detail pane: rebuilding it would destroy
   // the terminal. Every other re-render (test results, history refreshes)
   // leaves it alone; navigation goes through leaveShell() first.
-  if (state.shell && state.view === 'servers' && state.selServer === state.shell.serverId && !state.draft) return
+  if (state.shell) return
   term = { key: null, container: null, rows: [], stick: true }
   el.detailPane.scrollTop = 0
 
@@ -1667,6 +1669,7 @@ function buildPalette() {
       label: s.id,
       hint: `${s.username}@${s.host}`,
       run: () => {
+        if (!leaveShell()) return
         state.selServer = s.id
         localStorage.setItem('srv.selServer', s.id)
         state.draft = false
@@ -1903,7 +1906,7 @@ document.querySelectorAll('.tab').forEach((tab) => {
   tab.addEventListener('click', () => {
     // Re-tapping the active tab returns to the list. Without this you can get
     // stranded in the detail pane on a single-column layout.
-    if (state.view === tab.dataset.view) { if (leaveShell()) el.app.dataset.pane = 'list' }
+    if (state.view === tab.dataset.view) { if (leaveShell()) { el.app.dataset.pane = 'list'; renderDetail() } }
     else switchView(tab.dataset.view)
   })
 })

@@ -492,6 +492,31 @@ describe('dashboard-server', () => {
   })
 })
 
+describe('dashboard-server upgrade hardening', () => {
+  it('answers 400 to a malformed upgrade target instead of throwing, and keeps serving', async () => {
+    const { app } = createDashboardApp({ registry, keychain, logStore })
+    const server = http.createServer(app)
+    ;(app as any).attachWebSocket(server)
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const addr = server.address()
+    const port = typeof addr === 'object' && addr ? addr.port : 0
+    const net = await import('node:net')
+    const reply = await new Promise<string>((resolve) => {
+      const sock = net.createConnection(port, '127.0.0.1', () => {
+        sock.write('GET http://[ HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: http://127.0.0.1:4280\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n')
+      })
+      let buf = ''
+      sock.on('data', (d) => { buf += d.toString() })
+      sock.on('close', () => resolve(buf))
+      sock.on('error', () => resolve(buf))
+    })
+    expect(reply).toMatch(/^HTTP\/1\.1 400/)
+    const ok = await request(app).get('/api/servers')
+    expect(ok.status).toBe(200)
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+  })
+})
+
 describe('dashboard-server connection testing', () => {
   function fakeSshManager(behavior: (server: any, secret?: string) => void | Promise<void>) {
     return { testConnect: async (server: any, secret?: string) => behavior(server, secret) } as any

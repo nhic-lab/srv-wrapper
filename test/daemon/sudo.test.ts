@@ -81,6 +81,17 @@ describe('isPasswordPrompt', () => {
     '\x1b[1;32mPassword:\x1b[0m ', 'root@box password:',
   ])('accepts %j', (s) => expect(isPasswordPrompt(stripAnsi(s))).toBe(true))
   it.each(['$ ', 'password: x\n', 'Password:\n', 'ls -la\nuser@host:~$ ', ''])('rejects %j', (s) => expect(isPasswordPrompt(stripAnsi(s))).toBe(false))
+  it.each([
+    // vim: a buffer line mentioning Password, cursor jump to the bottom row, then the ':' command line
+    '#PasswordAuthentication yes\x1b[24;1H:',
+    // less: a screen line, then erase-to-end and the ':' prompt on the last row
+    'Password rules\x1b[K\x1b[25;1H:',
+    // cursor moved down by a relative motion before the colon
+    'password\x1b[2B:',
+  ])('rejects an editor/pager screen %j', (s) => expect(isPasswordPrompt(stripAnsi(s))).toBe(false))
+  it('still accepts a coloured prompt once positioning codes are treated as line breaks', () => {
+    expect(isPasswordPrompt(stripAnsi('\x1b[2J\x1b[1;1H\x1b[1mPassword:\x1b[0m '))).toBe(true)
+  })
 })
 
 describe('gateSudo', () => {

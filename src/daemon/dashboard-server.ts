@@ -371,13 +371,22 @@ export function createDashboardApp(opts: DashboardOptions): { app: express.Expre
   const attachWebSocket = (server: Server) => {
     const wss = new WebSocketServer({ noServer: true })
     server.on('upgrade', (req, socket, head) => {
-      const origin = req.headers.origin
-      if (!origin || !ALLOWED_ORIGINS.has(origin)) {
-        socket.write('HTTP/1.1 403 Forbidden\r\n\r\n')
+      // A refused upgrade is written to a raw socket; the peer may already be gone.
+      socket.on('error', () => {})
+      const refuse = (status: string) => {
+        socket.write(`HTTP/1.1 ${status}\r\n\r\n`)
         socket.destroy()
-        return
       }
-      const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+      const origin = req.headers.origin
+      if (!origin || !ALLOWED_ORIGINS.has(origin)) return refuse('403 Forbidden')
+      let url: URL
+      try {
+        url = new URL(req.url ?? '/', 'http://127.0.0.1')
+      } catch {
+        // e.g. an absolute-form target like "http://[": a throw here would be an
+        // uncaught exception on the HTTP server, i.e. the whole daemon.
+        return refuse('400 Bad Request')
+      }
       if (url.pathname === '/api/live') {
         wss.handleUpgrade(req, socket, head, (ws) => {
           wsClients.add(ws)
@@ -396,8 +405,7 @@ export function createDashboardApp(opts: DashboardOptions): { app: express.Expre
         })
         return
       }
-      socket.write('HTTP/1.1 404 Not Found\r\n\r\n')
-      socket.destroy()
+      refuse('404 Not Found')
     })
   }
 

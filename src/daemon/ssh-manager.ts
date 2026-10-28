@@ -357,7 +357,13 @@ export class SshManager {
     return sessionId
   }
 
-  private primeSudo(channel: any, password: string, onData: (chunk: string) => void): Promise<void> {
+  /**
+   * `forward` (default true) attaches a string-decoding `data` listener once
+   * priming succeeds, which is what agent sessions want. The browser shell
+   * passes false and attaches its own raw-Buffer listener instead, so a
+   * multi-byte character split across chunks is not mangled by toString().
+   */
+  private primeSudo(channel: any, password: string, onData: (chunk: string) => void, forward = true): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       const primer = createSudoPrimer()
       let settled = false
@@ -380,7 +386,7 @@ export class SshManager {
           reject(new SudoError('sudo error: authentication failed'))
           return
         }
-        channel.on('data', (chunk: Buffer) => onData(chunk.toString()))
+        if (forward) channel.on('data', (chunk: Buffer) => onData(chunk.toString()))
         if (r.passthrough) onData(r.passthrough)
         resolve()
       }
@@ -430,15 +436,14 @@ export class SshManager {
 
     if (opts.sudoPassword !== undefined) {
       try {
-        await this.primeSudo(channel, opts.sudoPassword, (s) => onData(Buffer.from(s)))
+        await this.primeSudo(channel, opts.sudoPassword, (s) => onData(Buffer.from(s)), false)
       } catch (err) {
         try { channel.end() } catch { /* already closed */ }
         unwind()
         throw err
       }
-    } else {
-      channel.on('data', (data: Buffer) => onData(data))
     }
+    channel.on('data', (data: Buffer) => onData(data))
 
     channel.on('close', () => {
       if (closed) return

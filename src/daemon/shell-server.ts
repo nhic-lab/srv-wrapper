@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { StringDecoder } from 'node:string_decoder'
 import type { WebSocket } from 'ws'
 import type { Registry } from './registry.js'
 import type { LogStore } from './logstore.js'
@@ -63,6 +64,9 @@ export function handleShellConnection(ws: WebSocket, serverId: string, query: UR
   let redactor: Redactor | undefined
   let redactTimer: NodeJS.Timeout | undefined
   let tail = ''
+  // One decoder for everything that crosses from bytes to text (log, broadcast,
+  // prompt tail): a character split across two SSH chunks must not become U+FFFD.
+  const decoder = new StringDecoder('utf8')
   let idleTimer: NodeJS.Timeout | undefined
   const idleMs = opts.idleTimeoutMs ?? SHELL_IDLE_TIMEOUT_MS
 
@@ -72,6 +76,8 @@ export function handleShellConnection(ws: WebSocket, serverId: string, query: UR
     if (idleTimer) clearTimeout(idleTimer)
     if (redactTimer) clearTimeout(redactTimer)
     if (redactor) emit(redactor.flush())
+    const rest = decoder.end()
+    if (rest) opts.logStore.appendOutput(runId, rest)
     opts.logStore.finish(runId, null)
     opts.broadcast({ type: 'done', requestId: runId, exitCode: null, ...tag })
   }
@@ -79,9 +85,10 @@ export function handleShellConnection(ws: WebSocket, serverId: string, query: UR
   /** The three sinks every output byte goes to. */
   const emit = (buf: Buffer) => {
     if (buf.length === 0) return
-    const text = buf.toString()
-    tail = stripAnsi(tail + text).slice(-PROMPT_TAIL_BYTES)
     if (ws.readyState === ws.OPEN) ws.send(buf, { binary: true })
+    const text = decoder.write(buf)
+    if (!text) return
+    tail = stripAnsi(tail + text).slice(-PROMPT_TAIL_BYTES)
     opts.logStore.appendOutput(runId, text)
     opts.broadcast({ type: 'stream', requestId: runId, stream: 'stdout', chunk: text, ...tag })
   }
@@ -129,6 +136,9 @@ export function handleShellConnection(ws: WebSocket, serverId: string, query: UR
       return
     }
     auditPaste(true, 'accepted')
+    // The prompt has been answered: a second paste needs a fresh one, or the
+    // password would be typed again as a command once sudo has moved on.
+    tail = ''
     // Backstop for a prompt that echoes: scrub the exact bytes from every sink for a short window.
     if (redactTimer) clearTimeout(redactTimer)
     if (redactor) emit(redactor.flush())
@@ -182,7 +192,7 @@ export function handleShellConnection(ws: WebSocket, serverId: string, query: UR
     })
     .catch((err: any) => {
       const safe = err instanceof SudoError ? err.message : sanitizeSshError(err)
-      opts.logStore.appendOutput(runId, safe + '\n')
+      if (!finished) opts.logStore.appendOutput(runId, safe + '\n')
       finish()
       if (ws.readyState === ws.OPEN) ws.close(err instanceof SudoError ? 4403 : 4500, safe)
     })

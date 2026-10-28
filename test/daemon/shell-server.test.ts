@@ -296,4 +296,57 @@ describe('/api/shell/:id', () => {
     expect(await sh.closed).toEqual({ code: 4408, reason: 'closed after 4 h idle' })
     expect(channel.end).toHaveBeenCalled()
   })
+  it('a second paste_secret before the remote prints anything is refused (stale prompt tail)', async () => {
+    const { channel, writes } = await setup({ resolveSudoSecret: () => 'hunter2' })
+    const sh = openShell('srv-a1?cols=80&rows=24')
+    await sh.opened
+    await sh.waitFor((f) => f.t === 'ready')
+    channel.emit('data', Buffer.from('[sudo] password for u: '))
+    await sh.waitFor((f) => f.bin)
+    sh.send({ t: 'paste_secret' })
+    sh.send({ t: 'paste_secret' })
+    const toast = await sh.waitFor((f) => f.t === 'toast')
+    expect(toast.msg).toBe('The shell is not at a password prompt.')
+    expect(writes).toEqual(['hunter2\r'])
+    sh.ws.close()
+    await sh.closed
+  })
+
+  it('a multi-byte character split across two chunks reaches the log and the broadcast intact', async () => {
+    const { channel } = await setup()
+    const sh = openShell('srv-a1?cols=80&rows=24')
+    await sh.opened
+    const ready = await sh.waitFor((f) => f.t === 'ready')
+    const check = Buffer.from('✓\n')
+    channel.emit('data', check.subarray(0, 2))
+    channel.emit('data', check.subarray(2))
+    await sh.waitFor((f) => f.bin && f.bin.toString().includes('\n'))
+    expect(binText(sh.frames)).toBe('✓\n')
+    expect(logStore.get(ready.runId)!.output).toBe('✓\n')
+    expect(broadcasts.filter((b) => b.type === 'stream').map((b) => b.chunk).join('')).toBe('✓\n')
+    sh.ws.close()
+    await sh.closed
+  })
+
+  it('a root shell forwards raw Buffers after priming, so a split character survives', async () => {
+    registry.upsert({ id: 'srv-a1', host: 'h', port: 22, username: 'u', authMethod: 'password', sudoAllowed: true })
+    const tokenOf = (line: string) => line.match(/__srv_sudo''_(.+?)__/)![1]
+    const { channel } = await setup({
+      resolveSudoSecret: () => 'rootpw',
+      script: (s, all, emit) => {
+        if (s.startsWith('sudo -k; sudo -p')) { emit(s); emit(`__srv_sudo_${tokenOf(all[0])}__`) }
+        else if (all.length === 2) emit(`\r\n__srv_done_${tokenOf(all[0])}__0\r\n# `)
+      },
+    })
+    const sh = openShell('srv-a1?cols=80&rows=24&root=1')
+    await sh.opened
+    await sh.waitFor((f) => f.t === 'ready')
+    const check = Buffer.from('✓\n')
+    channel.emit('data', check.subarray(0, 2))
+    channel.emit('data', check.subarray(2))
+    await sh.waitFor((f) => f.bin && f.bin.toString().includes('\n'))
+    expect(binText(sh.frames)).toBe('# ✓\n')
+    sh.ws.close()
+    await sh.closed
+  })
 })

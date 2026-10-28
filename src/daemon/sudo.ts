@@ -113,10 +113,14 @@ export function gateSudo(
 }
 
 // CSI / OSC / single-char escape sequences, enough for prompt colouring.
-const ANSI = /\x1b\[[0-?]*[ -\/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]/g
+const ANSI = /\x1b\[[0-?]*[ -\/]*([@-~])|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]/g
+// CSI finals that move the cursor or erase: a full-screen app (vim, less) uses
+// these between a buffer line and its own ':' prompt. Deleting them would glue
+// "…Password…" and ":" together and fool the guard, so they become line breaks.
+const POSITIONING = new Set(['H', 'f', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'd', 'J', 'K', 'S', 'T'])
 
 export function stripAnsi(s: string): string {
-  return s.replace(ANSI, '')
+  return s.replace(ANSI, (_m, final?: string) => (final && POSITIONING.has(final) ? '\n' : ''))
 }
 
 /** A prompt that is waiting for a secret: ends in "password…:" or "passphrase…:" with nothing after it but spaces. */
