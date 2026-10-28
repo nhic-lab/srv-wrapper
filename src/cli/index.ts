@@ -68,7 +68,8 @@ program
   .requiredOption('--agent <label>', 'label identifying the calling agent/session')
   .option('--timeout <seconds>', 'kill the command if it runs longer than this many seconds (0 disables)', '120')
   .option('--retry <n>', 'retry on connection/transport failure only (not on a non-zero exit), immediately, this many times', '0')
-  .action(async (serverId: string, command: string, options: { agent: string; timeout: string; retry: string }) => {
+  .option('--sudo', 'run as root via sudo (the server must have sudo enabled in the dashboard)')
+  .action(async (serverId: string, command: string, options: { agent: string; timeout: string; retry: string; sudo?: boolean }) => {
     try {
       const timeoutMs = parseTimeoutMs(options.timeout)
       const retries = parseNonNegativeInt(options.retry, '--retry')
@@ -80,6 +81,7 @@ program
             agentLabel: options.agent,
             command,
             timeoutMs,
+            sudo: options.sudo,
             onStream: (stream, chunk) => {
               (stream === 'stdout' ? process.stdout : process.stderr).write(chunk)
             },
@@ -100,7 +102,8 @@ program
   .option('--parallel <n>', 'max number of servers to run concurrently', '4')
   .option('--timeout <seconds>', 'kill each command if it runs longer than this many seconds (0 disables)', '120')
   .option('--retry <n>', 'retry a server\'s command on connection/transport failure only, immediately, this many times', '0')
-  .action(async (serverIdsArg: string, command: string, options: { agent: string; parallel: string; timeout: string; retry: string }) => {
+  .option('--sudo', 'run as root via sudo (the server must have sudo enabled in the dashboard)')
+  .action(async (serverIdsArg: string, command: string, options: { agent: string; parallel: string; timeout: string; retry: string; sudo?: boolean }) => {
     const serverIds = serverIdsArg
       .split(',')
       .map((s) => s.trim())
@@ -126,6 +129,7 @@ program
       parallel,
       timeoutMs: parseTimeoutMs(options.timeout),
       retries,
+      sudo: options.sudo,
       onStream: (serverId, stream, chunk) => tagger.push(serverId, stream, chunk),
     })
     tagger.flush()
@@ -171,8 +175,9 @@ const session = program.command('session').description('Manage a persistent inte
 session
   .command('start <server-id>')
   .requiredOption('--agent <label>', 'label identifying the calling agent/session')
-  .action(async (serverId: string, options: { agent: string }) => {
-    const sessionId = await sessionStart({ socketPath: srvSocketPath(), serverId, agentLabel: options.agent })
+  .option('--sudo', 'prime sudo for the session so later `sudo` commands need no password (the server must have sudo enabled in the dashboard)')
+  .action(async (serverId: string, options: { agent: string; sudo?: boolean }) => {
+    const sessionId = await sessionStart({ socketPath: srvSocketPath(), serverId, agentLabel: options.agent, sudo: options.sudo })
     process.stdout.write(sessionId + '\n')
   })
 

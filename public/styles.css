@@ -332,6 +332,7 @@ a:hover { color: var(--tea-text); text-decoration: underline; }
 .chip.fail { background: var(--danger-bg); color: var(--danger); }
 .chip.testing { background: var(--testing-bg); color: var(--testing-fg); }
 .chip.untested { background: var(--hillmist); color: var(--muted); }
+.chip.sudo { background: var(--sunbird); color: var(--on-sunbird); font-family: var(--font-mono); letter-spacing: 0.02em; }
 .agent-chip {
   display: inline-flex; flex: none;
   background: var(--agent-bg); color: var(--agent-fg);
@@ -520,6 +521,15 @@ a:hover { color: var(--tea-text); text-decoration: underline; }
   padding: 9px 10px; background: var(--white);
   font: 400 0.875rem/1.4 var(--font-ui); color: var(--basalt);
 }
+
+/* sudo switch */
+.sudo-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: -6px 0 16px; }
+.check { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; flex: none; }
+.check input { width: 16px; height: 16px; margin: 0; accent-color: var(--tea); }
+.check-label { font: 500 0.8125rem/1.45 var(--font-ui); }
+.sudo-note { font: 400 0.75rem/1.45 var(--font-ui); color: var(--muted-2); }
+.sudo-field { grid-template-columns: minmax(0, 1fr) auto; align-items: end; }
+.sudo-field .btn-plain { margin-bottom: 1px; }
 
 .hops-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
 .hops-head .section-label { flex: 1; }

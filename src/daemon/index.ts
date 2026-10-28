@@ -48,6 +48,16 @@ async function main() {
     registry,
     logStore,
     sshManager,
+    // A separate `<id>:sudo` entry wins; a password-auth server falls back to
+    // its login password (what sudo usually wants); key-auth servers without a
+    // sudo entry have nothing to offer and the request is refused.
+    resolveSudoSecret: (server) => {
+      try {
+        return keychain.getSudoSecret(server.id)
+      } catch {
+        return server.authMethod === 'password' ? keychain.getSecret(server.id) : undefined
+      }
+    },
     onBroadcast: (event) => broadcast(event),
   })
   await socketServer.start()

@@ -7,6 +7,7 @@ import net from 'node:net'
 import type { ServerRecord } from '../shared/types.js'
 import type { Registry } from './registry.js'
 import { resolveJumpPath } from './jump-chain.js'
+import { buildSudoExecCommand, createSudoPrimer, SudoError } from './sudo.js'
 
 /** Thrown by `SshManager.exec` when a command runs past its timeout. Kept
  *  distinct from connection errors so the socket server can surface a plain
@@ -145,6 +146,8 @@ function defaultConnect(server: ServerRecord, secret: string, hostKeyStore?: Hos
 interface OpenSession {
   clients: any[]
   channel: any
+  /** sudo's timestamp cache was primed for this shell; invalidate it on stop. */
+  sudoPrimed: boolean
 }
 
 function closeChainClients(clients: any[]): void {
@@ -160,6 +163,7 @@ function closeChainClients(clients: any[]): void {
 
 export class SshManager {
   private static readonly TEST_CONNECT_TIMEOUT_MS = 8000
+  private static readonly SUDO_PRIME_TIMEOUT_MS = 15_000
 
   private sessions = new Map<string, OpenSession>()
 
@@ -237,12 +241,18 @@ export class SshManager {
   /**
    * `timeoutMs`, when given, kills the command and rejects with a
    * CommandTimeoutError if it hasn't closed its channel by then.
+   *
+   * `opts.sudoPassword`, when given, runs the command as root: it is wrapped
+   * by buildSudoExecCommand and the password is written to the channel's
+   * stdin before stdin is closed. The password never enters the command
+   * string (remote `ps`, shell history, the audit log).
    */
   async exec(
     server: ServerRecord,
     command: string,
     onData: (stream: 'stdout' | 'stderr', chunk: string) => void,
-    timeoutMs?: number
+    timeoutMs?: number,
+    opts?: { sudoPassword?: string }
   ): Promise<number> {
     let clients: any[]
     try {
@@ -265,7 +275,8 @@ export class SshManager {
         closeChainClients(clients)
         fn()
       }
-      client.exec(command, (err: any, channel: any) => {
+      const remoteCommand = opts?.sudoPassword !== undefined ? buildSudoExecCommand(command) : command
+      client.exec(remoteCommand, (err: any, channel: any) => {
         if (err) {
           // Requesting the exec channel failed outright — the command itself
           // never started, so this is also safe to retry.
@@ -278,6 +289,7 @@ export class SshManager {
         // blocks forever waiting for input that will never arrive, and in a
         // shell loop of `srv exec` calls, each child inherits the same
         // terminal stdin, contending over it too.
+        if (opts?.sudoPassword !== undefined) channel.write(opts.sudoPassword + '\n')
         channel.end?.()
         if (timeoutMs) {
           timer = setTimeout(() => settle(() => reject(new CommandTimeoutError(timeoutMs))), timeoutMs)
@@ -290,14 +302,33 @@ export class SshManager {
     })
   }
 
-  async startSession(server: ServerRecord, onData: (chunk: string) => void): Promise<string> {
+  /**
+   * `opts.sudoPassword`, when given, primes sudo's own timestamp cache in the
+   * new shell (`sudo -v`) before the session is handed out, so the agent's
+   * later `sudo` commands run without a prompt for the box's timestamp_timeout.
+   * The priming phase's output is never forwarded; the password is written
+   * only after sudo's prompt sentinel is seen (see createSudoPrimer).
+   */
+  async startSession(server: ServerRecord, onData: (chunk: string) => void, opts?: { sudoPassword?: string }): Promise<string> {
     const clients = await this.connectChain(server)
     const client = clients[clients.length - 1]
 
     const channel = await new Promise<any>((resolve, reject) => {
       client.shell((err: any, ch: any) => (err ? reject(err) : resolve(ch)))
     })
-    channel.on('data', (data: Buffer) => onData(data.toString()))
+
+    const sudoPassword = opts?.sudoPassword
+    if (sudoPassword === undefined) {
+      channel.on('data', (data: Buffer) => onData(data.toString()))
+    } else {
+      try {
+        await this.primeSudo(channel, sudoPassword, onData)
+      } catch (err) {
+        try { channel.end() } catch { /* already closed */ }
+        closeChainClients(clients)
+        throw err
+      }
+    }
 
     const sessionId = randomUUID()
     channel.on('error', (err: any) => {
@@ -306,8 +337,40 @@ export class SshManager {
       closeChainClients(clients)
     })
 
-    this.sessions.set(sessionId, { clients, channel })
+    this.sessions.set(sessionId, { clients, channel, sudoPrimed: sudoPassword !== undefined })
     return sessionId
+  }
+
+  private primeSudo(channel: any, password: string, onData: (chunk: string) => void): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const primer = createSudoPrimer()
+      let settled = false
+      const timer = setTimeout(() => {
+        if (settled) return
+        settled = true
+        channel.removeListener('data', onPriming)
+        reject(new SudoError('sudo error: timed out waiting for sudo prompt'))
+      }, SshManager.SUDO_PRIME_TIMEOUT_MS)
+
+      const onPriming = (data: Buffer) => {
+        if (settled) return
+        const r = primer.feed(data.toString())
+        if (r.writePassword) channel.write(password + '\n')
+        if (!r.done) return
+        settled = true
+        clearTimeout(timer)
+        channel.removeListener('data', onPriming)
+        if (!r.done.ok) {
+          reject(new SudoError('sudo error: authentication failed'))
+          return
+        }
+        channel.on('data', (chunk: Buffer) => onData(chunk.toString()))
+        if (r.passthrough) onData(r.passthrough)
+        resolve()
+      }
+      channel.on('data', onPriming)
+      channel.write(primer.commandLine)
+    })
   }
 
   sendToSession(sessionId: string, command: string): void {
@@ -319,6 +382,10 @@ export class SshManager {
   stopSession(sessionId: string): void {
     const session = this.sessions.get(sessionId)
     if (!session) return
+    if (session.sudoPrimed) {
+      // Best effort: don't let the primed cache outlive the session.
+      try { session.channel.write('sudo -k\n') } catch { /* channel already gone */ }
+    }
     session.channel.end()
     closeChainClients(session.clients)
     this.sessions.delete(sessionId)

@@ -26,6 +26,66 @@ interface ServerInput {
   jumpChain?: string[]
   secret: string
   isEdit?: boolean
+  sudoAllowed?: boolean
+  /** string = store a separate sudo password; null = delete the stored one; absent = keep. */
+  sudoSecret?: string | null
+}
+
+/** What the request asks the Keychain to do with the `<id>:sudo` entry. */
+type SudoSecretAction = { kind: 'set'; secret: string } | { kind: 'delete' } | { kind: 'keep' }
+
+/** The switch value a request asks for: explicit wins, absent keeps what is stored, new servers default off. */
+function effectiveSudoAllowed(input: ServerInput, existing: ServerRecord | undefined): boolean {
+  return input.sudoAllowed ?? existing?.sudoAllowed ?? false
+}
+
+function sudoSecretAction(input: ServerInput, existing: ServerRecord | undefined): SudoSecretAction {
+  if (!effectiveSudoAllowed(input, existing)) return { kind: 'delete' }
+  if (typeof input.sudoSecret === 'string' && input.sudoSecret) return { kind: 'set', secret: input.sudoSecret }
+  if (input.sudoSecret === null) return { kind: 'delete' }
+  return { kind: 'keep' }
+}
+
+/**
+ * Key-auth servers have no login password to fall back on, so enabling sudo
+ * needs a sudo password: provided now, or already stored.
+ */
+function validateSudoInput(input: ServerInput, existing: ServerRecord | undefined): string | null {
+  if (input.sudoAllowed !== undefined && typeof input.sudoAllowed !== 'boolean') return 'sudoAllowed must be a boolean'
+  if (input.sudoSecret !== undefined && input.sudoSecret !== null && typeof input.sudoSecret !== 'string') return 'sudoSecret must be a string or null'
+  if (effectiveSudoAllowed(input, existing) && input.authMethod === 'key') {
+    const action = sudoSecretAction(input, existing)
+    const stored = action.kind === 'keep' && Boolean(existing?.hasSudoSecret)
+    if (action.kind !== 'set' && !stored) return 'sudoSecret is required for sudo on key-based auth'
+  }
+  return null
+}
+
+/** Reads the stored sudo secret, or undefined when there is none (Keychain throws on a missing entry). */
+function readSudoSecret(keychain: Keychain, id: string): string | undefined {
+  try {
+    return keychain.getSudoSecret(id)
+  } catch {
+    return undefined
+  }
+}
+
+/** Applies a SudoSecretAction and returns the resulting hasSudoSecret flag. */
+function applySudoSecret(keychain: Keychain, id: string, action: SudoSecretAction, priorStored: boolean): boolean {
+  if (action.kind === 'set') {
+    keychain.setSudoSecret(id, action.secret)
+    return true
+  }
+  if (action.kind === 'delete') {
+    if (priorStored) keychain.deleteSudoSecret(id)
+    return false
+  }
+  return priorStored
+}
+
+function restoreSudoSecret(keychain: Keychain, id: string, prior: string | undefined): void {
+  if (prior !== undefined) keychain.setSudoSecret(id, prior)
+  else keychain.deleteSudoSecret(id)
 }
 
 function validateServerInput(input: any): string | null {
@@ -70,6 +130,8 @@ export function createDashboardApp(opts: DashboardOptions): { app: express.Expre
     if (!existing && input.isEdit) {
       return res.status(404).json({ error: `no server with id "${input.id}" exists to edit` })
     }
+    const sudoError = validateSudoInput(input, existing)
+    if (sudoError) return res.status(400).json({ error: sudoError })
 
     if (input.jumpChain && input.jumpChain.length > 0) {
       try {
@@ -79,31 +141,44 @@ export function createDashboardApp(opts: DashboardOptions): { app: express.Expre
       }
     }
 
-    const record = opts.registry.upsert({
+    const sudoAllowed = effectiveSudoAllowed(input, existing)
+    const sudoAction = sudoSecretAction(input, existing)
+    const priorSudoStored = Boolean(existing?.hasSudoSecret)
+    opts.registry.upsert({
       id: input.id, host: input.host, port: input.port, username: input.username,
       authMethod: input.authMethod, keyPath: input.keyPath, jumpChain: input.jumpChain,
+      sudoAllowed, hasSudoSecret: priorSudoStored,
     })
     let priorSecret: string | undefined
+    let priorSudoSecret: string | undefined
+    let sudoTouched = false
     try {
       priorSecret = existing ? opts.keychain.getSecret(input.id) : undefined
+      priorSudoSecret = priorSudoStored ? readSudoSecret(opts.keychain, input.id) : undefined
       // A passphrase-less private key legitimately has no secret to store.
       const keyFallback = input.authMethod === 'key' ? '' : undefined
       const secretToStore = input.secret || priorSecret || keyFallback
       if (secretToStore === undefined) throw new Error('missing secret')
       opts.keychain.setSecret(input.id, secretToStore)
+      sudoTouched = sudoAction.kind !== 'keep'
+      const hasSudoSecret = applySudoSecret(opts.keychain, input.id, sudoAction, priorSudoStored)
+      opts.registry.setSudoSecretStored(input.id, hasSudoSecret)
     } catch (err: any) {
       if (existing) {
         opts.registry.upsert({
           id: existing.id, host: existing.host, port: existing.port, username: existing.username,
           authMethod: existing.authMethod, keyPath: existing.keyPath, jumpChain: existing.jumpChain,
+          sudoAllowed: existing.sudoAllowed, hasSudoSecret: existing.hasSudoSecret,
         })
         if (priorSecret !== undefined) opts.keychain.setSecret(existing.id, priorSecret)
+        if (sudoTouched) restoreSudoSecret(opts.keychain, existing.id, priorSudoSecret)
       } else {
         opts.registry.delete(input.id)
+        if (sudoTouched) opts.keychain.deleteSudoSecret(input.id)
       }
       return res.status(500).json({ error: `failed to store secret: ${err?.message ?? err}` })
     }
-    res.status(201).json(record)
+    res.status(201).json(opts.registry.get(input.id))
   })
 
   app.post('/api/servers/bulk', (req, res) => {
@@ -116,7 +191,7 @@ export function createDashboardApp(opts: DashboardOptions): { app: express.Expre
     const valid: ServerInput[] = []
 
     for (const input of servers) {
-      const error = validateServerInput(input)
+      const error = validateServerInput(input) ?? validateSudoInput(input, opts.registry.get(input.id))
       if (error) { failed.push({ id: input.id, error }); continue }
       if (seenIds.has(input.id)) { failed.push({ id: input.id, error: 'duplicate id in batch' }); continue }
       seenIds.add(input.id)
@@ -128,30 +203,38 @@ export function createDashboardApp(opts: DashboardOptions): { app: express.Expre
     }
 
     const succeeded: string[] = []
-    const committed: Array<{ id: string; priorRecord: ServerRecord | undefined; priorSecret: string | undefined }> = []
+    const committed: Array<{ id: string; priorRecord: ServerRecord | undefined; priorSecret: string | undefined; priorSudoSecret: string | undefined }> = []
     try {
       for (const input of valid) {
         const priorRecord = opts.registry.get(input.id)
         const priorSecret = priorRecord ? opts.keychain.getSecret(input.id) : undefined
+        const priorSudoStored = Boolean(priorRecord?.hasSudoSecret)
+        const priorSudoSecret = priorSudoStored ? readSudoSecret(opts.keychain, input.id) : undefined
         opts.registry.upsert({
           id: input.id, host: input.host, port: input.port, username: input.username,
           authMethod: input.authMethod, keyPath: input.keyPath,
+          sudoAllowed: effectiveSudoAllowed(input, priorRecord), hasSudoSecret: priorSudoStored,
         })
-        committed.push({ id: input.id, priorRecord, priorSecret })
+        committed.push({ id: input.id, priorRecord, priorSecret, priorSudoSecret })
         opts.keychain.setSecret(input.id, input.secret)
+        const hasSudoSecret = applySudoSecret(opts.keychain, input.id, sudoSecretAction(input, priorRecord), priorSudoStored)
+        opts.registry.setSudoSecretStored(input.id, hasSudoSecret)
         succeeded.push(input.id)
       }
     } catch (err: any) {
-      for (const { id, priorRecord, priorSecret } of committed) {
+      for (const { id, priorRecord, priorSecret, priorSudoSecret } of committed) {
         if (priorRecord) {
           opts.registry.upsert({
             id: priorRecord.id, host: priorRecord.host, port: priorRecord.port, username: priorRecord.username,
             authMethod: priorRecord.authMethod, keyPath: priorRecord.keyPath,
+            sudoAllowed: priorRecord.sudoAllowed, hasSudoSecret: priorRecord.hasSudoSecret,
           })
           if (priorSecret !== undefined) opts.keychain.setSecret(priorRecord.id, priorSecret)
+          restoreSudoSecret(opts.keychain, priorRecord.id, priorSudoSecret)
         } else {
           opts.registry.delete(id)
           opts.keychain.deleteSecret(id)
+          opts.keychain.deleteSudoSecret(id)
         }
       }
       return res.status(500).json({ error: `bulk import failed partway, rolled back: ${err?.message ?? err}`, succeeded: [], failed: [] })
@@ -239,6 +322,7 @@ export function createDashboardApp(opts: DashboardOptions): { app: express.Expre
   app.delete('/api/servers/:id', (req, res) => {
     opts.registry.delete(req.params.id)
     opts.keychain.deleteSecret(req.params.id)
+    opts.keychain.deleteSudoSecret(req.params.id)
     res.status(204).end()
   })
 

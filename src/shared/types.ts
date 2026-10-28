@@ -16,6 +16,11 @@ export interface ServerRecord {
   lastTestAt?: number
   lastTestOk?: boolean
   lastTestError?: string
+  /** Human-set switch: may an agent pass --sudo for this server. Off by default. */
+  sudoAllowed?: boolean
+  /** Whether a separate `<id>:sudo` Keychain entry exists. Mirrored in the
+   *  registry so the dashboard never has to poll Keychain per server. */
+  hasSudoSecret?: boolean
 }
 
 export type RunKind = 'exec' | 'session'
@@ -34,6 +39,8 @@ export interface RunRecord {
   outputBytes: number
   /** True when `output` is a head+tail extract rather than the whole stream. */
   truncated: boolean
+  /** True when the command ran as root via the daemon-fed sudo path. */
+  sudo: boolean
 }
 
 /** Run metadata without `output` — what the dashboard's list pane consumes. */
@@ -49,6 +56,7 @@ export interface RunSummary {
   outputBytes: number
   truncated: boolean
   hasOutput: boolean
+  sudo: boolean
 }
 
 export interface ExecRequest {
@@ -58,6 +66,8 @@ export interface ExecRequest {
   command: string
   /** Kill the command and report an error if it runs longer than this. Absent/0 means no timeout. */
   timeoutMs?: number
+  /** Run as root via the daemon-fed sudo path. Refused unless the server has sudoAllowed. */
+  sudo?: boolean
 }
 
 export interface ListStatusRequest {
@@ -77,6 +87,8 @@ export interface SessionStartRequest {
   type: 'session_start'
   serverId: string
   agentLabel: string
+  /** Prime sudo's timestamp cache in the new shell. Refused unless the server has sudoAllowed. */
+  sudo?: boolean
 }
 
 export interface SessionSendRequest {

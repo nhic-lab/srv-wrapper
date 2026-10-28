@@ -3,6 +3,7 @@ import { SocketServer } from '../../src/daemon/socket-server.js'
 import { Registry } from '../../src/daemon/registry.js'
 import { LogStore } from '../../src/daemon/logstore.js'
 import { SshManager } from '../../src/daemon/ssh-manager.js'
+import { SudoError } from '../../src/daemon/sudo.js'
 import { createConnection } from 'node:net'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -379,5 +380,140 @@ describe('SocketServer', () => {
     expect(clearTimeoutSpy.mock.calls.some((call) => call[0] === firstIdleTimer)).toBe(true)
     clearTimeoutSpy.mockRestore()
     conn1.destroy()
+  })
+  describe('sudo', () => {
+    let connectCalls: number
+    let lastExecOpts: any
+
+    /** Rebuilds the server with an SshManager whose exec records how it was called. */
+    async function rebuild(resolveSudoSecret: (s: any) => string | undefined, startSession?: () => Promise<string>) {
+      connectCalls = 0
+      lastExecOpts = undefined
+      const mgr = new SshManager(
+        () => 'secret',
+        async () => {
+          connectCalls += 1
+          return {
+            end: () => {},
+            exec: (_cmd: string, cb: (err: any, channel: any) => void) => {
+              const { EventEmitter } = require('node:events')
+              const channel = new EventEmitter() as any
+              channel.stderr = new EventEmitter()
+              channel.write = () => {}
+              cb(null, channel)
+              queueMicrotask(() => channel.emit('close', 0))
+            },
+          }
+        }
+      )
+      const origExec = mgr.exec.bind(mgr)
+      mgr.exec = ((srv: any, cmd: string, onData: any, timeoutMs?: number, opts?: any) => {
+        lastExecOpts = opts
+        return origExec(srv, cmd, onData, timeoutMs, opts)
+      }) as any
+      if (startSession) mgr.startSession = startSession as any
+      await server.stop()
+      server = new SocketServer({ socketPath, registry, logStore, sshManager: mgr, resolveSudoSecret })
+      await server.start()
+    }
+
+    it('refuses exec with sudo when the server has sudo off, without connecting, and records the refusal', async () => {
+      await rebuild(() => 'rootpw')
+      const events = await connectAndSend({ type: 'exec', requestId: 'r', serverId: 'srv-a1', agentLabel: 'a', command: 'id', sudo: true })
+      expect(events.at(-1)).toMatchObject({ type: 'done', exitCode: null, error: 'sudo is not enabled for srv-a1' })
+      expect(connectCalls).toBe(0)
+      const run = logStore.list()[0]
+      expect(run).toMatchObject({ sudo: true, command: 'id', exitCode: null })
+      expect(run.endedAt).not.toBeNull()
+      expect(logStore.get(run.id)!.output).toContain('sudo is not enabled')
+    })
+
+    it('refuses exec with sudo when no sudo password resolves (key auth, no :sudo entry)', async () => {
+      registry.upsert({ id: 'srv-k', host: 'h', port: 22, username: 'u', authMethod: 'key', keyPath: '/k', sudoAllowed: true })
+      await rebuild(() => undefined)
+      const events = await connectAndSend({ type: 'exec', requestId: 'r', serverId: 'srv-k', agentLabel: 'a', command: 'id', sudo: true })
+      expect(events.at(-1).error).toBe('sudo error: no sudo password stored for srv-k')
+      expect(connectCalls).toBe(0)
+    })
+
+    it('passes the resolved sudo password to sshManager.exec, logs the original command with sudo=true, and never logs the password', async () => {
+      registry.upsert({ id: 'srv-a1', host: 'h', port: 22, username: 'u', authMethod: 'password', sudoAllowed: true })
+      await rebuild(() => 'rootpw')
+      const events = await connectAndSend({ type: 'exec', requestId: 'r', serverId: 'srv-a1', agentLabel: 'a', command: 'id', sudo: true })
+      expect(events.at(-1)).toMatchObject({ type: 'done', exitCode: 0 })
+      expect(lastExecOpts).toEqual({ sudoPassword: 'rootpw' })
+      const run = logStore.list()[0]
+      expect(run).toMatchObject({ sudo: true, command: 'id', exitCode: 0 })
+      expect(JSON.stringify(logStore.get(run.id))).not.toContain('rootpw')
+    })
+
+    it('runs a plain exec without sudo opts and logs sudo=false', async () => {
+      registry.upsert({ id: 'srv-a1', host: 'h', port: 22, username: 'u', authMethod: 'password', sudoAllowed: true })
+      await rebuild(() => 'rootpw')
+      await connectAndSend({ type: 'exec', requestId: 'r', serverId: 'srv-a1', agentLabel: 'a', command: 'id' })
+      expect(lastExecOpts).toBeUndefined()
+      expect(logStore.list()[0].sudo).toBe(false)
+    })
+
+    it('passes a SudoError from session_start through unsanitized', async () => {
+      registry.upsert({ id: 'srv-a1', host: 'h', port: 22, username: 'u', authMethod: 'password', sudoAllowed: true })
+      await rebuild(() => 'rootpw', async () => { throw new SudoError('sudo error: authentication failed') })
+      const events = await connectAndSend({ type: 'session_start', requestId: 'r', serverId: 'srv-a1', agentLabel: 'a', sudo: true })
+      expect(events.at(-1).error).toBe('sudo error: authentication failed')
+      expect(logStore.list()[0]).toMatchObject({ kind: 'session', sudo: true })
+    })
+
+    it('broadcasts sudo: true on stream and done events of a sudo run', async () => {
+      registry.upsert({ id: 'srv-a1', host: 'h', port: 22, username: 'u', authMethod: 'password', sudoAllowed: true })
+      await rebuild(() => 'rootpw')
+      const broadcasts: any[] = []
+      ;(server as any).opts.onBroadcast = (e: any) => broadcasts.push(e)
+      await connectAndSend({ type: 'exec', requestId: 'r', serverId: 'srv-a1', agentLabel: 'a', command: 'id', sudo: true })
+      expect(broadcasts.length).toBeGreaterThan(0)
+      expect(broadcasts.every((b) => b.sudo === true)).toBe(true)
+    })
+    it('session_start with sudo through the real SshManager registers the session even when the shell prompt arrives in the same chunk as the done line', async () => {
+      registry.upsert({ id: 'srv-a1', host: 'h', port: 22, username: 'u', authMethod: 'password', sudoAllowed: true })
+      const { EventEmitter } = await import('node:events')
+      const channel: any = new EventEmitter()
+      const writes: string[] = []
+      channel.write = (s: string) => {
+        writes.push(s)
+        queueMicrotask(() => {
+          if (s.startsWith('sudo -k; sudo -p')) {
+            channel.emit('data', Buffer.from(s))
+            channel.emit('data', Buffer.from(`__srv_sudo_${s.match(/__srv_sudo''_(.+?)__/)![1]}__`))
+          } else if (writes.length === 2) {
+            channel.emit('data', Buffer.from(`\r\n__srv_done_${writes[0].match(/__srv_sudo''_(.+?)__/)![1]}__0\r\nuser@host:~$ `))
+          }
+        })
+      }
+      channel.end = () => channel.emit('close')
+      const mgr = new SshManager(() => 'secret', async () => ({ end: () => {}, shell: (cb: any) => cb(null, channel) }))
+      await server.stop()
+      server = new SocketServer({ socketPath, registry, logStore, sshManager: mgr, resolveSudoSecret: () => 'rootpw' })
+      await server.start()
+
+      const events = await connectAndSend({ type: 'session_start', requestId: 'r', serverId: 'srv-a1', agentLabel: 'a', sudo: true }, 'session_started')
+      const sessionId = events.find((e) => e.type === 'session_started')?.sessionId
+      expect(typeof sessionId).toBe('string')
+      expect(writes[1]).toBe('rootpw\n')
+      const run = logStore.list()[0]
+      expect(logStore.get(run.id)!.output).toBe('user@host:~$ ')
+      expect(logStore.get(run.id)!.output).not.toContain('rootpw')
+      await connectAndSend({ type: 'session_stop', sessionId, requestId: 'r2' }, 'done')
+      expect(writes.at(-1)).toBe('sudo -k\n')
+    })
+
+    it('closes the run row and refuses cleanly when the sudo secret resolver throws', async () => {
+      registry.upsert({ id: 'srv-a1', host: 'h', port: 22, username: 'u', authMethod: 'password', sudoAllowed: true })
+      await rebuild(() => { throw new Error('No secret found for srv-a1 in Keychain (status 44)') })
+      const events = await connectAndSend({ type: 'exec', requestId: 'r', serverId: 'srv-a1', agentLabel: 'a', command: 'id', sudo: true })
+      expect(events.at(-1).error).toBe('sudo error: no sudo password stored for srv-a1')
+      expect(connectCalls).toBe(0)
+      const run = logStore.list()[0]
+      expect(run.endedAt).not.toBeNull()
+      expect(run.sudo).toBe(true)
+    })
   })
 })

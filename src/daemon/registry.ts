@@ -39,6 +39,12 @@ export class Registry {
     if (!cols.some((c) => c.name === 'last_test_error')) {
       this.db.exec(`ALTER TABLE servers ADD COLUMN last_test_error TEXT`)
     }
+    if (!cols.some((c) => c.name === 'sudo_allowed')) {
+      this.db.exec(`ALTER TABLE servers ADD COLUMN sudo_allowed INTEGER NOT NULL DEFAULT 0`)
+    }
+    if (!cols.some((c) => c.name === 'sudo_secret_stored')) {
+      this.db.exec(`ALTER TABLE servers ADD COLUMN sudo_secret_stored INTEGER NOT NULL DEFAULT 0`)
+    }
   }
 
   upsert(record: Omit<ServerRecord, 'createdAt' | 'updatedAt'>): ServerRecord {
@@ -48,11 +54,12 @@ export class Registry {
 
     this.db
       .prepare(
-        `INSERT INTO servers (id, host, port, username, auth_method, key_path, jump_chain, created_at, updated_at)
-         VALUES (@id, @host, @port, @username, @authMethod, @keyPath, @jumpChain, @createdAt, @updatedAt)
+        `INSERT INTO servers (id, host, port, username, auth_method, key_path, jump_chain, sudo_allowed, sudo_secret_stored, created_at, updated_at)
+         VALUES (@id, @host, @port, @username, @authMethod, @keyPath, @jumpChain, @sudoAllowed, @sudoSecretStored, @createdAt, @updatedAt)
          ON CONFLICT(id) DO UPDATE SET
            host=excluded.host, port=excluded.port, username=excluded.username,
-           auth_method=excluded.auth_method, key_path=excluded.key_path, jump_chain=excluded.jump_chain, updated_at=excluded.updated_at`
+           auth_method=excluded.auth_method, key_path=excluded.key_path, jump_chain=excluded.jump_chain,
+           sudo_allowed=excluded.sudo_allowed, sudo_secret_stored=excluded.sudo_secret_stored, updated_at=excluded.updated_at`
       )
       .run({
         id: record.id,
@@ -62,6 +69,9 @@ export class Registry {
         authMethod: record.authMethod,
         keyPath: record.keyPath ?? null,
         jumpChain: record.jumpChain && record.jumpChain.length > 0 ? JSON.stringify(record.jumpChain) : null,
+        // Omitted on an edit means "keep what is stored", like the reachability columns.
+        sudoAllowed: (record.sudoAllowed ?? existing?.sudoAllowed ?? false) ? 1 : 0,
+        sudoSecretStored: (record.hasSudoSecret ?? existing?.hasSudoSecret ?? false) ? 1 : 0,
         createdAt,
         updatedAt: now,
       })
@@ -86,7 +96,13 @@ export class Registry {
       lastTestAt: row.last_test_at ?? undefined,
       lastTestOk: row.last_test_ok == null ? undefined : Boolean(row.last_test_ok),
       lastTestError: row.last_test_error ?? undefined,
+      sudoAllowed: Boolean(row.sudo_allowed),
+      hasSudoSecret: Boolean(row.sudo_secret_stored),
     }
+  }
+
+  setSudoSecretStored(id: string, stored: boolean): void {
+    this.db.prepare('UPDATE servers SET sudo_secret_stored = ? WHERE id = ?').run(stored ? 1 : 0, id)
   }
 
   setHostKeyFingerprint(id: string, fingerprint: string): void {

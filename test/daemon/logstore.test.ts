@@ -133,4 +133,25 @@ describe('LogStore', () => {
     expect(rec.output).toBe(body)
     expect(rec.output).not.toContain('elided')
   })
+  it('start records sudo and get/list round-trip it, defaulting to false', () => {
+    store.start({ id: 'r1', serverId: 's', agentLabel: 'a', kind: 'exec', command: 'ls', sudo: true })
+    store.start({ id: 'r2', serverId: 's', agentLabel: 'a', kind: 'exec', command: 'ls' })
+    expect(store.get('r1')!.sudo).toBe(true)
+    expect(store.get('r2')!.sudo).toBe(false)
+    expect(store.list().map((r) => [r.id, r.sudo]).sort()).toEqual([['r1', true], ['r2', false]])
+  })
+
+  it('adds the sudo column to a database created before it existed', () => {
+    store.start({ id: 'old-1', serverId: 'srv-a1', agentLabel: 'a', kind: 'exec', command: 'x' })
+    store['db'].exec('ALTER TABLE runs DROP COLUMN sudo')
+    store.close()
+
+    const reopened = new LogStore(dbPath)
+    try {
+      expect(reopened.get('old-1')!.sudo).toBe(false)
+    } finally {
+      reopened.close()
+      store = new LogStore(dbPath)
+    }
+  })
 })
