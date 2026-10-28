@@ -75,6 +75,22 @@ srv session stop <session-id>                          # always close it when yo
 
 Always call `srv session stop` when you're finished with a session — an unclosed session holds a live SSH channel open until it idles out on its own (don't rely on that timeout; close it explicitly).
 
+### Running as root
+
+Add `--sudo` to `exec`, `exec-many` or `session start` to run as root. The daemon feeds the sudo password to `sudo` itself; you never see it and never type it.
+
+```bash
+srv exec srv-a1 "systemctl restart nginx" --agent ops-agent --sudo
+srv exec-many srv-a1,srv-b2 "apt-get update" --agent rollout-agent --sudo
+srv session start srv-a1 --agent ops-agent --sudo     # later `sudo ...` sends in this session need no password
+```
+
+- `--sudo` only works on servers where the human has switched sudo on in the dashboard. Otherwise the run fails immediately with `sudo is not enabled for <id>` (or `sudo error: no sudo password stored for <id>`). **Ask the human to enable it for that server; never try to work around it** (no `su`, no editing sudoers, no asking for the password).
+- `exec --sudo` runs your command under root's `sh`, with stdin from `/dev/null`. Do not put `sudo` in the command yourself.
+- `session start --sudo` primes sudo once; plain `sudo <cmd>` sends then work without a prompt for the box's `timestamp_timeout` window (usually 5–15 min). If a `sudo` send hangs on a prompt, the box has `timestamp_timeout=0`: stop the session and use `exec --sudo` per command instead.
+- Boxes with `Defaults requiretty` reject non-tty sudo; `exec --sudo` fails there with sudo's own "a terminal is required" message. Report that to the human.
+- Sudo runs are marked as such in the dashboard and audit history.
+
 - `<server-id>` — given to you by the user (e.g. `srv-a1`). If you don't have one, ask the user which server-id to use — do not guess or invent one.
 - `--agent <your-label>` — **required on every `exec` and `session start` call.** Use a stable, descriptive label for this session (e.g. `claude-session-refactor`, `bulk-migration-agent`) so a human watching the live dashboard can tell your activity apart from other agents running at the same time.
 - Output streams live to your terminal; `exec` exits with the remote command's exit code.
